@@ -22,9 +22,11 @@ import java.util.HashMap;
 import java.util.HashSet;
 import java.util.Set;
 import org.apache.pinot.spi.data.readers.GenericRow;
-import org.apache.pinot.spi.utils.StringUtils;
 import org.testng.Assert;
 import org.testng.annotations.Test;
+
+import static java.nio.charset.StandardCharsets.UTF_8;
+
 public class StreamCSVMessageDecoderTest {
   @Test
   public void testCSVMessageDecoder() throws Exception {
@@ -36,10 +38,13 @@ public class StreamCSVMessageDecoderTest {
 
     Set<String> fieldsToRead = new HashSet<>(Arrays.asList("a", "b", "c"));
     decoder.init(props, fieldsToRead, "test");
-    GenericRow row = decoder.decode(StringUtils.encodeUtf8("1,abc,321"), new GenericRow());
+    GenericRow row = decoder.decode("1,abc,321".getBytes(UTF_8), new GenericRow());
 
     Assert.assertEquals((String) row.getValue("a"), "1");
     Assert.assertEquals(row.getValue("b"), "abc");
     Assert.assertEquals(row.getValue("c"), "321");
+
+    row = decoder.decode("123,invalid,a".getBytes(UTF_8), new GenericRow());
+    System.out.println(row);
   }
 }

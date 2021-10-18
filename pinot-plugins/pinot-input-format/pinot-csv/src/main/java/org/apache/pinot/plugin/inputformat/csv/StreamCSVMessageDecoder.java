@@ -29,9 +29,10 @@ import org.apache.commons.csv.CSVRecord;
 import org.apache.pinot.spi.data.readers.GenericRow;
 import org.apache.pinot.spi.data.readers.RecordExtractor;
 import org.apache.pinot.spi.stream.StreamMessageDecoder;
-import org.apache.pinot.spi.utils.StringUtils;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+
+import static java.nio.charset.StandardCharsets.UTF_8;
 
 public class StreamCSVMessageDecoder implements StreamMessageDecoder<byte[]> {
   private static final Logger LOGGER = LoggerFactory.getLogger(StreamCSVMessageDecoder.class);
@@ -77,7 +78,7 @@ public class StreamCSVMessageDecoder implements StreamMessageDecoder<byte[]> {
   @Override
   public GenericRow decode(byte[] payload, GenericRow destination) {
     try {
-      CSVParser parser = CSVParser.parse(StringUtils.decodeUtf8(payload), _csvFormat);
+      CSVParser parser = CSVParser.parse(new String(payload, UTF_8), _csvFormat);
       _csvRecordExtractor.extract(parser.iterator().next(), destination);
       return destination;
     } catch (Exception e) {
