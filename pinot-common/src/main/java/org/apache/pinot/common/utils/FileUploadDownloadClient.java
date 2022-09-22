@@ -18,18 +18,23 @@
  */
 package org.apache.pinot.common.utils;
 
+import com.fasterxml.jackson.databind.JsonNode;
 import java.io.File;
 import java.io.IOException;
 import java.io.InputStream;
+import java.net.SocketTimeoutException;
 import java.net.URI;
 import java.net.URISyntaxException;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
+import java.util.HashMap;
+import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
 import javax.annotation.Nullable;
 import javax.net.ssl.SSLContext;
+import javax.ws.rs.core.Response;
 import org.apache.commons.lang.StringUtils;
 import org.apache.http.Header;
 import org.apache.http.HttpEntity;
@@ -57,6 +62,8 @@ import org.apache.pinot.spi.config.table.TableType;
 import org.apache.pinot.spi.utils.CommonConstants;
 import org.apache.pinot.spi.utils.JsonUtils;
 import org.apache.pinot.spi.utils.StringUtil;
+import org.apache.pinot.spi.utils.builder.ControllerRequestURLBuilder;
+import org.apache.pinot.spi.utils.retry.RetryPolicies;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -73,6 +80,12 @@ public class FileUploadDownloadClient implements AutoCloseable {
     public static final String UPLOAD_TYPE = "UPLOAD_TYPE";
     public static final String REFRESH_ONLY = "REFRESH_ONLY";
     public static final String DOWNLOAD_URI = "DOWNLOAD_URI";
+
+    /**
+     * This header is only used for METADATA push, to allow controller to copy segment to deep store,
+     * if segment was not placed in the deep store to begin with
+     */
+    public static final String COPY_SEGMENT_TO_DEEP_STORE = "COPY_SEGMENT_TO_DEEP_STORE";
     public static final String SEGMENT_ZK_METADATA_CUSTOM_MAP_MODIFIER = "Pinot-SegmentZKMetadataCustomMapModifier";
     public static final String CRYPTER = "CRYPTER";
   }
@@ -742,6 +755,72 @@ public class FileUploadDownloadClient implements AutoCloseable {
   }
 
   /**
+   * Returns a map from a given tableType to a list of segments for that given tableType (OFFLINE or REALTIME)
+   * If tableType is left unspecified, both OFFLINE and REALTIME segments will be returned in the map.
+   */
+  public Map<String, List<String>> getSegments(URI controllerUri, String rawTableName, @Nullable TableType tableType,
+      boolean excludeReplacedSegments) throws Exception {
+    List<String> tableTypes;
+    if (tableType == null) {
+      tableTypes = Arrays.asList(TableType.OFFLINE.toString(), TableType.REALTIME.toString());
+    } else {
+      tableTypes = Arrays.asList(tableType.toString());
+    }
+    ControllerRequestURLBuilder controllerRequestURLBuilder =
+        ControllerRequestURLBuilder.baseUrl(controllerUri.toString());
+    Map<String, List<String>> tableTypeToSegments = new HashMap<>();
+    for (String tableTypeToFilter : tableTypes) {
+      tableTypeToSegments.put(tableTypeToFilter, new ArrayList<>());
+      String uri = controllerRequestURLBuilder.forSegmentListAPI(rawTableName,
+          tableTypeToFilter, excludeReplacedSegments);
+      RequestBuilder requestBuilder = RequestBuilder.get(uri).setVersion(HttpVersion.HTTP_1_1);
+      HttpClient.setTimeout(requestBuilder, HttpClient.DEFAULT_SOCKET_TIMEOUT_MS);
+      RetryPolicies.exponentialBackoffRetryPolicy(5, 10_000L, 2.0).attempt(() -> {
+        try {
+          SimpleHttpResponse response =
+              HttpClient.wrapAndThrowHttpException(_httpClient.sendRequest(requestBuilder.build()));
+          LOGGER.info("Response {}: {} received for GET request to URI: {}", response.getStatusCode(),
+              response.getResponse(), uri);
+          tableTypeToSegments.put(tableTypeToFilter,
+              getSegmentNamesFromResponse(tableTypeToFilter, response.getResponse()));
+          return true;
+        } catch (SocketTimeoutException se) {
+          // In case of the timeout, we should re-try.
+          return false;
+        } catch (HttpErrorStatusException e) {
+          if (e.getStatusCode() < 500) {
+            if (e.getStatusCode() == Response.Status.NOT_FOUND.getStatusCode()) {
+              LOGGER.error("Segments not found for table {} when sending request uri: {}", rawTableName, uri);
+            }
+          }
+          return false;
+        }
+      });
+    }
+    return tableTypeToSegments;
+  }
+
+  private List<String> getSegmentNamesFromResponse(String tableType, String responseString)
+      throws IOException {
+    List<String> segments = new ArrayList<>();
+    JsonNode responseJsonNode = JsonUtils.stringToJsonNode(responseString);
+    Iterator<JsonNode> responseElements = responseJsonNode.elements();
+    while (responseElements.hasNext()) {
+      JsonNode responseElementJsonNode = responseElements.next();
+      if (!responseElementJsonNode.has(tableType)) {
+        continue;
+      }
+      JsonNode jsonArray = responseElementJsonNode.get(tableType);
+      Iterator<JsonNode> elements = jsonArray.elements();
+      while (elements.hasNext()) {
+        JsonNode segmentJsonNode = elements.next();
+        segments.add(segmentJsonNode.asText());
+      }
+    }
+    return segments;
+  }
+
+  /**
    * Used by controllers to send requests to servers:
    * Controller periodic task uses this endpoint to ask servers
    * to upload committed llc segment to segment store if missing.
@@ -1002,6 +1081,26 @@ public class FileUploadDownloadClient implements AutoCloseable {
   public int downloadFile(URI uri, File dest, AuthProvider authProvider, List<Header> httpHeaders)
       throws IOException, HttpErrorStatusException {
     return _httpClient.downloadFile(uri, HttpClient.DEFAULT_SOCKET_TIMEOUT_MS, dest, authProvider, httpHeaders);
+  }
+
+  /**
+   * Download and untar a file in a streamed way with rate limit
+   *
+   * @param uri URI
+   * @param dest File destination
+   * @param authProvider auth token
+   * @param httpHeaders http headers
+   * @param maxStreamRateInByte limit the rate to write download-untar stream to disk, in bytes
+   *                  -1 for no disk write limit, 0 for limit the writing to min(untar, download) rate
+   * @return Response status code
+   * @throws IOException
+   * @throws HttpErrorStatusException
+   */
+  public File downloadUntarFileStreamed(URI uri, File dest, AuthProvider authProvider, List<Header> httpHeaders,
+      long maxStreamRateInByte)
+      throws IOException, HttpErrorStatusException {
+    return _httpClient.downloadUntarFileStreamed(uri, HttpClient.DEFAULT_SOCKET_TIMEOUT_MS, dest, authProvider,
+        httpHeaders, maxStreamRateInByte);
   }
 
   /**

@@ -47,8 +47,10 @@ public class TableConfig extends BaseJsonConfig {
   public static final String ROUTING_CONFIG_KEY = "routing";
   public static final String QUERY_CONFIG_KEY = "query";
   public static final String INSTANCE_ASSIGNMENT_CONFIG_MAP_KEY = "instanceAssignmentConfigMap";
+  public static final String INSTANCE_PARTITIONS_MAP_CONFIG_KEY = "instancePartitionsMap";
   public static final String FIELD_CONFIG_LIST_KEY = "fieldConfigList";
   public static final String UPSERT_CONFIG_KEY = "upsertConfig";
+  public static final String DEDUP_CONFIG_KEY = "dedupConfig";
   public static final String INGESTION_CONFIG_KEY = "ingestionConfig";
   public static final String TIER_CONFIGS_LIST_KEY = "tierConfigs";
   public static final String TUNER_CONFIG_LIST_KEY = "tunerConfigs";
@@ -83,10 +85,17 @@ public class TableConfig extends BaseJsonConfig {
   private RoutingConfig _routingConfig;
   private QueryConfig _queryConfig;
   private Map<InstancePartitionsType, InstanceAssignmentConfig> _instanceAssignmentConfigMap;
+
+  @JsonPropertyDescription(value = "Point to an existing instance partitions")
+  private Map<InstancePartitionsType, String> _instancePartitionsMap;
+
   private List<FieldConfig> _fieldConfigList;
 
   @JsonPropertyDescription(value = "upsert related config")
   private UpsertConfig _upsertConfig;
+
+  @JsonPropertyDescription(value = "Dedup related config")
+  private DedupConfig _dedupConfig;
 
   @JsonPropertyDescription(value = "Config related to ingesting data into the table")
   private IngestionConfig _ingestionConfig;
@@ -113,10 +122,13 @@ public class TableConfig extends BaseJsonConfig {
           Map<InstancePartitionsType, InstanceAssignmentConfig> instanceAssignmentConfigMap,
       @JsonProperty(FIELD_CONFIG_LIST_KEY) @Nullable List<FieldConfig> fieldConfigList,
       @JsonProperty(UPSERT_CONFIG_KEY) @Nullable UpsertConfig upsertConfig,
+      @JsonProperty(DEDUP_CONFIG_KEY) @Nullable DedupConfig dedupConfig,
       @JsonProperty(INGESTION_CONFIG_KEY) @Nullable IngestionConfig ingestionConfig,
       @JsonProperty(TIER_CONFIGS_LIST_KEY) @Nullable List<TierConfig> tierConfigsList,
       @JsonProperty(IS_DIM_TABLE_KEY) boolean dimTable,
-      @JsonProperty(TUNER_CONFIG_LIST_KEY) @Nullable List<TunerConfig> tunerConfigList) {
+      @JsonProperty(TUNER_CONFIG_LIST_KEY) @Nullable List<TunerConfig> tunerConfigList,
+      @JsonProperty(INSTANCE_PARTITIONS_MAP_CONFIG_KEY) @Nullable
+          Map<InstancePartitionsType, String> instancePartitionsMap) {
     Preconditions.checkArgument(tableName != null, "'tableName' must be configured");
     Preconditions.checkArgument(!tableName.contains(TABLE_NAME_FORBIDDEN_SUBSTRING),
         "'tableName' cannot contain double underscore ('__')");
@@ -140,10 +152,12 @@ public class TableConfig extends BaseJsonConfig {
     _instanceAssignmentConfigMap = instanceAssignmentConfigMap;
     _fieldConfigList = fieldConfigList;
     _upsertConfig = upsertConfig;
+    _dedupConfig = dedupConfig;
     _ingestionConfig = ingestionConfig;
     _tierConfigsList = tierConfigsList;
     _dimTable = dimTable;
     _tunerConfigList = tunerConfigList;
+    _instancePartitionsMap = instancePartitionsMap;
   }
 
   @JsonProperty(TABLE_NAME_KEY)
@@ -248,6 +262,15 @@ public class TableConfig extends BaseJsonConfig {
     _instanceAssignmentConfigMap = instanceAssignmentConfigMap;
   }
 
+  @JsonProperty(INSTANCE_PARTITIONS_MAP_CONFIG_KEY)
+  public Map<InstancePartitionsType, String> getInstancePartitionsMap() {
+    return _instancePartitionsMap;
+  }
+
+  public void setInstancePartitionsMap(Map<InstancePartitionsType, String> instancePartitionsMap) {
+    _instancePartitionsMap = instancePartitionsMap;
+  }
+
   @JsonProperty(FIELD_CONFIG_LIST_KEY)
   @Nullable
   public List<FieldConfig> getFieldConfigList() {
@@ -265,6 +288,15 @@ public class TableConfig extends BaseJsonConfig {
 
   public void setUpsertConfig(UpsertConfig upsertConfig) {
     _upsertConfig = upsertConfig;
+  }
+
+  @Nullable
+  public DedupConfig getDedupConfig() {
+    return _dedupConfig;
+  }
+
+  public void setDedupConfig(DedupConfig dedupConfig) {
+    _dedupConfig = dedupConfig;
   }
 
   @JsonProperty(INGESTION_CONFIG_KEY)
@@ -285,11 +317,6 @@ public class TableConfig extends BaseJsonConfig {
 
   public void setTierConfigsList(List<TierConfig> tierConfigsList) {
     _tierConfigsList = tierConfigsList;
-  }
-
-  @JsonIgnore
-  public UpsertConfig.HashFunction getHashFunction() {
-    return _upsertConfig == null ? UpsertConfig.HashFunction.NONE : _upsertConfig.getHashFunction();
   }
 
   @JsonIgnore

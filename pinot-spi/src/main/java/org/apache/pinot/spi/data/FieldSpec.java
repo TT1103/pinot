@@ -191,7 +191,7 @@ public abstract class FieldSpec implements Comparable<FieldSpec>, Serializable {
     }
   }
 
-  private static Object getDefaultNullValue(FieldType fieldType, DataType dataType,
+  public static Object getDefaultNullValue(FieldType fieldType, DataType dataType,
       @Nullable String stringDefaultNullValue) {
     if (stringDefaultNullValue != null) {
       return dataType.convert(stringDefaultNullValue);
@@ -208,7 +208,6 @@ public abstract class FieldSpec implements Comparable<FieldSpec>, Serializable {
             case DOUBLE:
               return DEFAULT_METRIC_NULL_VALUE_OF_DOUBLE;
             case BIG_DECIMAL:
-              // todo(nhejazi): update documentation w/ default null values.
               return DEFAULT_METRIC_NULL_VALUE_OF_BIG_DECIMAL;
             case STRING:
               return DEFAULT_METRIC_NULL_VALUE_OF_STRING;
@@ -452,7 +451,8 @@ public abstract class FieldSpec implements Comparable<FieldSpec>, Serializable {
     }
 
     /**
-     * Returns {@code true} if the data type is numeric (INT, LONG, FLOAT, DOUBLE), {@code false} otherwise.
+     * Returns {@code true} if the data type is numeric (INT, LONG, FLOAT, DOUBLE, BIG_DECIMAL), {@code false}
+     * otherwise.
      */
     public boolean isNumeric() {
       return _numeric;
@@ -536,5 +536,20 @@ public abstract class FieldSpec implements Comparable<FieldSpec>, Serializable {
   public int compareTo(FieldSpec otherSpec) {
     // Sort fieldspecs based on their name
     return _name.compareTo(otherSpec._name);
+  }
+
+  /***
+   * Return true if it is backward compatible with the old FieldSpec.
+   * Backward compatibility requires
+   * all other fields except DefaultNullValue and Max Length should be retained.
+   *
+   * @param oldFieldSpec
+   * @return
+   */
+  public boolean isBackwardCompatibleWith(FieldSpec oldFieldSpec) {
+
+    return EqualityUtils.isEqual(_name, oldFieldSpec._name)
+            && EqualityUtils.isEqual(_dataType, oldFieldSpec._dataType)
+            && EqualityUtils.isEqual(_isSingleValueField, oldFieldSpec._isSingleValueField);
   }
 }

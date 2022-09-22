@@ -19,7 +19,7 @@
 package org.apache.pinot.common.minion;
 
 import com.fasterxml.jackson.core.JsonProcessingException;
-import org.apache.helix.ZNRecord;
+import org.apache.helix.zookeeper.datamodel.ZNRecord;
 import org.apache.pinot.spi.utils.JsonUtils;
 
 
@@ -27,7 +27,7 @@ import org.apache.pinot.spi.utils.JsonUtils;
  * Base abstract class for minion task metadata.
  *
  * This metadata gets serialized and stored in zookeeper under the path:
- * MINION_TASK_METADATA/${taskName}/${tableNameWithType}
+ * MINION_TASK_METADATA/${tableNameWithType}/${taskName}
  */
 public abstract class BaseTaskMetadata {
 

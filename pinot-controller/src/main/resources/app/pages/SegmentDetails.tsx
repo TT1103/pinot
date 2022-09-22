@@ -121,7 +121,6 @@ const SegmentDetails = ({ match }: RouteComponentProps<Props>) => {
   const [value, setValue] = useState('');
   const fetchData = async () => {
     const result = await PinotMethodUtils.getSegmentDetails(tableName, segmentName);
-    console.log("result", result)
     setSegmentSummary(result.summary);
     setIndexes(result.indexes);
     setReplica(result.replicaSet);
@@ -236,7 +235,6 @@ const SegmentDetails = ({ match }: RouteComponentProps<Props>) => {
           <CustomizedTables
             title="Replica Set"
             data={replica}
-            isPagination={true}
             showSearchBox={true}
             inAccordionFormat={true}
           />
@@ -263,7 +261,6 @@ const SegmentDetails = ({ match }: RouteComponentProps<Props>) => {
                 <CustomizedTables
                   title="Indexes"
                   data={indexes}
-                  isPagination={true}
                   showSearchBox={true}
                   inAccordionFormat={true}
                 />

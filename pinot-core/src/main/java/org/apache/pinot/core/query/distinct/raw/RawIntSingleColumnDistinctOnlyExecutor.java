@@ -23,6 +23,7 @@ import org.apache.pinot.core.common.BlockValSet;
 import org.apache.pinot.core.operator.blocks.TransformBlock;
 import org.apache.pinot.core.query.distinct.DistinctExecutor;
 import org.apache.pinot.spi.data.FieldSpec.DataType;
+import org.roaringbitmap.RoaringBitmap;
 
 
 /**
@@ -30,19 +31,46 @@ import org.apache.pinot.spi.data.FieldSpec.DataType;
  */
 public class RawIntSingleColumnDistinctOnlyExecutor extends BaseRawIntSingleColumnDistinctExecutor {
 
-  public RawIntSingleColumnDistinctOnlyExecutor(ExpressionContext expression, DataType dataType, int limit) {
-    super(expression, dataType, limit);
+  public RawIntSingleColumnDistinctOnlyExecutor(ExpressionContext expression, DataType dataType, int limit,
+      boolean nullHandlingEnabled) {
+    super(expression, dataType, limit, nullHandlingEnabled);
   }
 
   @Override
   public boolean process(TransformBlock transformBlock) {
     BlockValSet blockValueSet = transformBlock.getBlockValueSet(_expression);
-    int[] values = blockValueSet.getIntValuesSV();
     int numDocs = transformBlock.getNumDocs();
-    for (int i = 0; i < numDocs; i++) {
-      _valueSet.add(values[i]);
-      if (_valueSet.size() >= _limit) {
-        return true;
+    if (blockValueSet.isSingleValue()) {
+      int[] values = blockValueSet.getIntValuesSV();
+      if (_nullHandlingEnabled) {
+        RoaringBitmap nullBitmap = blockValueSet.getNullBitmap();
+        for (int i = 0; i < numDocs; i++) {
+          if (nullBitmap != null && nullBitmap.contains(i)) {
+            _hasNull = true;
+          } else {
+            _valueSet.add(values[i]);
+            if (_valueSet.size() >= _limit - (_hasNull ? 1 : 0)) {
+              return true;
+            }
+          }
+        }
+      } else {
+        for (int i = 0; i < numDocs; i++) {
+          _valueSet.add(values[i]);
+          if (_valueSet.size() >= _limit) {
+            return true;
+          }
+        }
+      }
+    } else {
+      int[][] values = blockValueSet.getIntValuesMV();
+      for (int i = 0; i < numDocs; i++) {
+        for (int value : values[i]) {
+          _valueSet.add(value);
+          if (_valueSet.size() >= _limit) {
+            return true;
+          }
+        }
       }
     }
     return false;

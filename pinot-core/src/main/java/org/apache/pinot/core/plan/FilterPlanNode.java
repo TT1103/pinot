@@ -92,8 +92,8 @@ public class FilterPlanNode implements PlanNode {
       BaseFilterOperator filterOperator = constructPhysicalOperator(filter, numDocs);
       if (validDocIdsSnapshot != null) {
         BaseFilterOperator validDocFilter = new BitmapBasedFilterOperator(validDocIdsSnapshot, false, numDocs);
-        return FilterOperatorUtils.getAndFilterOperator(Arrays.asList(filterOperator, validDocFilter), numDocs,
-            _queryContext.getDebugOptions());
+        return FilterOperatorUtils.getAndFilterOperator(_queryContext, Arrays.asList(filterOperator, validDocFilter),
+            numDocs);
       } else {
         return filterOperator;
       }
@@ -203,7 +203,7 @@ public class FilterPlanNode implements PlanNode {
             childFilterOperators.add(childFilterOperator);
           }
         }
-        return FilterOperatorUtils.getAndFilterOperator(childFilterOperators, numDocs, _queryContext.getDebugOptions());
+        return FilterOperatorUtils.getAndFilterOperator(_queryContext, childFilterOperators, numDocs);
       case OR:
         childFilters = filter.getChildren();
         childFilterOperators = new ArrayList<>(childFilters.size());
@@ -217,12 +217,12 @@ public class FilterPlanNode implements PlanNode {
             childFilterOperators.add(childFilterOperator);
           }
         }
-        return FilterOperatorUtils.getOrFilterOperator(childFilterOperators, numDocs, _queryContext.getDebugOptions());
+        return FilterOperatorUtils.getOrFilterOperator(_queryContext, childFilterOperators, numDocs);
       case NOT:
         childFilters = filter.getChildren();
         assert childFilters.size() == 1;
         BaseFilterOperator childFilterOperator = constructPhysicalOperator(childFilters.get(0), numDocs);
-        return FilterOperatorUtils.getNotFilterOperator(childFilterOperator, numDocs, null);
+        return FilterOperatorUtils.getNotFilterOperator(_queryContext, childFilterOperator, numDocs);
       case PREDICATE:
         Predicate predicate = filter.getPredicate();
         ExpressionContext lhs = predicate.getLhs();
@@ -250,6 +250,9 @@ public class FilterPlanNode implements PlanNode {
               return new TextContainsFilterOperator(textIndexReader, (TextContainsPredicate) predicate, numDocs);
             case TEXT_MATCH:
               textIndexReader = dataSource.getTextIndex();
+              Preconditions
+                  .checkState(textIndexReader != null, "Cannot apply TEXT_MATCH on column: %s without text index",
+                      column);
               // We could check for real time and segment Lucene reader, but easier to check the other way round
               if (textIndexReader instanceof NativeTextIndexReader
                   || textIndexReader instanceof NativeMutableTextIndex) {
@@ -275,7 +278,8 @@ public class FilterPlanNode implements PlanNode {
                         dataSource.getDataSourceMetadata().getDataType());
               }
               _predicateEvaluators.add(Pair.of(predicate, predicateEvaluator));
-              return FilterOperatorUtils.getLeafFilterOperator(predicateEvaluator, dataSource, numDocs);
+              return FilterOperatorUtils.getLeafFilterOperator(predicateEvaluator, dataSource, numDocs,
+                  _queryContext.isNullHandlingEnabled());
             case JSON_MATCH:
               JsonIndexReader jsonIndex = dataSource.getJsonIndex();
               Preconditions.checkState(jsonIndex != null, "Cannot apply JSON_MATCH on column: %s without json index",
@@ -300,7 +304,8 @@ public class FilterPlanNode implements PlanNode {
                   PredicateEvaluatorProvider.getPredicateEvaluator(predicate, dataSource.getDictionary(),
                       dataSource.getDataSourceMetadata().getDataType());
               _predicateEvaluators.add(Pair.of(predicate, predicateEvaluator));
-              return FilterOperatorUtils.getLeafFilterOperator(predicateEvaluator, dataSource, numDocs);
+              return FilterOperatorUtils.getLeafFilterOperator(predicateEvaluator, dataSource, numDocs,
+                  _queryContext.isNullHandlingEnabled());
           }
         }
       default:

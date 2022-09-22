@@ -20,10 +20,10 @@ package org.apache.pinot.integration.tests;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.google.common.base.Function;
-import com.google.common.collect.Lists;
 import java.io.File;
 import java.io.IOException;
 import java.net.URI;
+import java.util.Collections;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -89,8 +89,10 @@ public class SegmentWriterUploaderIntegrationTest extends BaseClusterIntegration
     batchConfigMap.put(BatchConfigProperties.OUTPUT_DIR_URI, _tarDir.getAbsolutePath());
     batchConfigMap.put(BatchConfigProperties.OVERWRITE_OUTPUT, "false");
     batchConfigMap.put(BatchConfigProperties.PUSH_CONTROLLER_URI, _controllerBaseApiUrl);
-    return new IngestionConfig(new BatchIngestionConfig(Lists.newArrayList(batchConfigMap), "APPEND", "HOURLY"), null,
-        null, null, null, null);
+    IngestionConfig ingestionConfig = new IngestionConfig();
+    ingestionConfig.setBatchIngestionConfig(
+        new BatchIngestionConfig(Collections.singletonList(batchConfigMap), "APPEND", "HOURLY"));
+    return ingestionConfig;
   }
 
   /**
@@ -153,7 +155,7 @@ public class SegmentWriterUploaderIntegrationTest extends BaseClusterIntegration
   private int getNumSegments()
       throws IOException {
     String jsonOutputStr = sendGetRequest(_controllerRequestURLBuilder.
-        forSegmentListAPIWithTableType(_tableNameWithType, TableType.OFFLINE.toString()));
+        forSegmentListAPI(_tableNameWithType, TableType.OFFLINE.toString()));
     JsonNode array = JsonUtils.stringToJsonNode(jsonOutputStr);
     return array.get(0).get("OFFLINE").size();
   }
@@ -167,7 +169,7 @@ public class SegmentWriterUploaderIntegrationTest extends BaseClusterIntegration
   private int getNumDocsInLatestSegment()
       throws IOException {
     String jsonOutputStr = sendGetRequest(_controllerRequestURLBuilder.
-        forSegmentListAPIWithTableType(_tableNameWithType, TableType.OFFLINE.toString()));
+        forSegmentListAPI(_tableNameWithType, TableType.OFFLINE.toString()));
     JsonNode array = JsonUtils.stringToJsonNode(jsonOutputStr);
     JsonNode segments = array.get(0).get("OFFLINE");
     String segmentName = segments.get(segments.size() - 1).asText();

@@ -95,6 +95,11 @@ public class EmptyIndexSegment implements ImmutableSegment {
   }
 
   @Override
+  public Object getValue(int docId, String column) {
+    throw new UnsupportedOperationException("Cannot read value from empty segment");
+  }
+
+  @Override
   public Dictionary getDictionary(String column) {
     return null;
   }
@@ -112,5 +117,11 @@ public class EmptyIndexSegment implements ImmutableSegment {
   @Override
   public long getSegmentSizeBytes() {
     return 0;
+  }
+
+  @Nullable
+  @Override
+  public String getTier() {
+    return null;
   }
 }

@@ -20,6 +20,7 @@ package org.apache.pinot.core.query.pruner;
 
 import java.util.HashMap;
 import java.util.Map;
+import javax.annotation.Nullable;
 import org.apache.pinot.spi.env.PinotConfiguration;
 
 
@@ -34,24 +35,27 @@ public class SegmentPrunerProvider {
 
   private static final Map<String, Class<? extends SegmentPruner>> PRUNER_MAP = new HashMap<>();
 
+  public static final String COLUMN_VALUE_SEGMENT_PRUNER_NAME = "columnvaluesegmentpruner";
+  public static final String SELECTION_QUERY_SEGMENT_PRUNER_NAME = "selectionquerysegmentpruner";
+
   static {
-    PRUNER_MAP.put("columnvaluesegmentpruner", ColumnValueSegmentPruner.class);
-    PRUNER_MAP.put("dataschemasegmentpruner", DataSchemaSegmentPruner.class);
-    PRUNER_MAP.put("validsegmentpruner", ValidSegmentPruner.class);
-    PRUNER_MAP.put("selectionquerysegmentpruner", SelectionQuerySegmentPruner.class);
+    PRUNER_MAP.put(COLUMN_VALUE_SEGMENT_PRUNER_NAME, ColumnValueSegmentPruner.class);
+    PRUNER_MAP.put(SELECTION_QUERY_SEGMENT_PRUNER_NAME, SelectionQuerySegmentPruner.class);
   }
 
+  @Nullable
   public static SegmentPruner getSegmentPruner(String prunerClassName, PinotConfiguration segmentPrunerConfig) {
     try {
       Class<? extends SegmentPruner> cls = PRUNER_MAP.get(prunerClassName.toLowerCase());
       if (cls != null) {
-        SegmentPruner segmentPruner = cls.newInstance();
+        SegmentPruner segmentPruner = cls.getDeclaredConstructor().newInstance();
         segmentPruner.init(segmentPrunerConfig);
         return segmentPruner;
       }
     } catch (Exception ex) {
       throw new RuntimeException("Not support SegmentPruner type with - " + prunerClassName, ex);
     }
-    throw new UnsupportedOperationException("No SegmentPruner type with - " + prunerClassName);
+    // being lenient to bad pruner names allows non-breaking evolution
+    return null;
   }
 }

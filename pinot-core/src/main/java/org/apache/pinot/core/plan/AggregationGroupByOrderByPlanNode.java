@@ -64,7 +64,7 @@ public class AggregationGroupByOrderByPlanNode implements PlanNode {
 
     // Use star-tree to solve the query if possible
     List<StarTreeV2> starTrees = _indexSegment.getStarTrees();
-    if (starTrees != null && !StarTreeUtils.isStarTreeDisabled(_queryContext)) {
+    if (starTrees != null && !_queryContext.isSkipStarTree()) {
       AggregationFunctionColumnPair[] aggregationFunctionColumnPairs =
           StarTreeUtils.extractAggregationFunctionPairs(aggregationFunctions);
       if (aggregationFunctionColumnPairs != null) {
@@ -76,8 +76,8 @@ public class AggregationGroupByOrderByPlanNode implements PlanNode {
             if (StarTreeUtils.isFitForStarTree(starTreeV2.getMetadata(), aggregationFunctionColumnPairs,
                 groupByExpressions, predicateEvaluatorsMap.keySet())) {
               TransformOperator transformOperator =
-                  new StarTreeTransformPlanNode(starTreeV2, aggregationFunctionColumnPairs, groupByExpressions,
-                      predicateEvaluatorsMap, _queryContext.getDebugOptions()).run();
+                  new StarTreeTransformPlanNode(_queryContext, starTreeV2, aggregationFunctionColumnPairs,
+                      groupByExpressions, predicateEvaluatorsMap).run();
               return new AggregationGroupByOrderByOperator(aggregationFunctions, groupByExpressions, transformOperator,
                   numTotalDocs, _queryContext, true);
             }

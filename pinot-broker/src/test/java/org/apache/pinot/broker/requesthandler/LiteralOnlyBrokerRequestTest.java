@@ -19,23 +19,28 @@
 package org.apache.pinot.broker.requesthandler;
 
 import com.fasterxml.jackson.databind.JsonNode;
-import com.fasterxml.jackson.databind.ObjectMapper;
 import java.util.Collections;
+import java.util.List;
 import java.util.Random;
 import java.util.concurrent.TimeUnit;
 import org.apache.pinot.broker.broker.AccessControlFactory;
 import org.apache.pinot.broker.broker.AllowAllAccessControlFactory;
 import org.apache.pinot.common.metrics.BrokerMetrics;
-import org.apache.pinot.common.metrics.PinotMetricUtils;
-import org.apache.pinot.common.response.broker.BrokerResponseNative;
+import org.apache.pinot.common.response.BrokerResponse;
+import org.apache.pinot.common.response.broker.ResultTable;
 import org.apache.pinot.common.utils.DataSchema;
+import org.apache.pinot.core.transport.server.routing.stats.ServerRoutingStatsManager;
 import org.apache.pinot.spi.env.PinotConfiguration;
+import org.apache.pinot.spi.metrics.PinotMetricUtils;
 import org.apache.pinot.spi.trace.RequestContext;
 import org.apache.pinot.spi.trace.Tracing;
 import org.apache.pinot.spi.utils.BytesUtils;
+import org.apache.pinot.spi.utils.JsonUtils;
 import org.apache.pinot.sql.parsers.CalciteSqlParser;
 import org.testng.Assert;
 import org.testng.annotations.Test;
+
+import static org.mockito.Mockito.mock;
 
 
 public class LiteralOnlyBrokerRequestTest {
@@ -99,11 +104,44 @@ public class LiteralOnlyBrokerRequestTest {
         .compileToPinotQuery("SELECT encodeUrl('key1=value 1&key2=value@!$2&key3=value%3'),"
             + " decodeUrl('key1%3Dvalue+1%26key2%3Dvalue%40%21%242%26key3%3Dvalue%253') FROM myTable")));
     Assert.assertFalse(BaseBrokerRequestHandler.isLiteralOnlyQuery(CalciteSqlParser
-            .compileToPinotQuery("SELECT count(*) from foo "
-                + "where bar = encodeUrl('key1=value 1&key2=value@!$2&key3=value%3')")));
+        .compileToPinotQuery("SELECT count(*) from foo "
+            + "where bar = encodeUrl('key1=value 1&key2=value@!$2&key3=value%3')")));
     Assert.assertFalse(BaseBrokerRequestHandler.isLiteralOnlyQuery(CalciteSqlParser
         .compileToPinotQuery("SELECT count(*) from foo "
             + "where bar = decodeUrl('key1%3Dvalue+1%26key2%3Dvalue%40%21%242%26key3%3Dvalue%253')")));
+    Assert.assertTrue(BaseBrokerRequestHandler.isLiteralOnlyQuery(CalciteSqlParser.compileToPinotQuery(
+        "SELECT toUtf8('hello!')," + " fromUtf8(toUtf8('hello!')) FROM myTable")));
+    Assert.assertFalse(BaseBrokerRequestHandler.isLiteralOnlyQuery(CalciteSqlParser.compileToPinotQuery(
+        "SELECT reverse(fromUtf8(foo))," + " toUtf8('hello!') FROM myTable")));
+    Assert.assertTrue(BaseBrokerRequestHandler.isLiteralOnlyQuery(CalciteSqlParser.compileToPinotQuery(
+        "SELECT toBase64(toUtf8('hello!'))," + " fromBase64('aGVsbG8h') FROM myTable")));
+    Assert.assertFalse(BaseBrokerRequestHandler.isLiteralOnlyQuery(CalciteSqlParser.compileToPinotQuery(
+        "SELECT reverse(toBase64(foo))," + " toBase64(fromBase64('aGVsbG8h')) FROM myTable")));
+    Assert.assertFalse(BaseBrokerRequestHandler.isLiteralOnlyQuery(
+        CalciteSqlParser.compileToPinotQuery("SELECT fromBase64(toBase64(to_utf8(foo))) FROM myTable")));
+    Assert.assertFalse(BaseBrokerRequestHandler.isLiteralOnlyQuery(
+        CalciteSqlParser.compileToPinotQuery("SELECT count(*) from foo " + "where bar = toBase64(toASCII('hello!'))")));
+    Assert.assertFalse(BaseBrokerRequestHandler.isLiteralOnlyQuery(
+        CalciteSqlParser.compileToPinotQuery("SELECT count(*) from foo " + "where bar = fromBase64('aGVsbG8h')")));
+    Assert.assertFalse(BaseBrokerRequestHandler.isLiteralOnlyQuery(CalciteSqlParser.compileToPinotQuery(
+        "SELECT count(*) from foo " + "where bar = fromUtf8(fromBase64('aGVsbG8h'))")));
+    Assert.assertFalse(BaseBrokerRequestHandler.isLiteralOnlyQuery(CalciteSqlParser
+        .compileToPinotQuery("SELECT count(*) from myTable where regexpReplace(col1, \"b(..)\", \"X$1Y\")  = "
+            + "\"fooXarYXazY\"")));
+    Assert.assertFalse(BaseBrokerRequestHandler.isLiteralOnlyQuery(CalciteSqlParser
+        .compileToPinotQuery("SELECT count(*) from myTable where regexpReplace(col1, \"b(..)\", \"X$1Y\", 10)  = "
+            + "\"fooXarYXazY\"")));
+    Assert.assertFalse(BaseBrokerRequestHandler.isLiteralOnlyQuery(CalciteSqlParser
+        .compileToPinotQuery("SELECT count(*) from myTable where regexpReplace(col1, \"b(..)\", \"X$1Y\", 10 , 1)  = "
+            + "\"fooXarYXazY\"")));
+    Assert.assertFalse(BaseBrokerRequestHandler.isLiteralOnlyQuery(CalciteSqlParser
+        .compileToPinotQuery("SELECT count(*) from myTable where regexpReplace(col1, \"b(..)\", \"X$1Y\", 10 , 1, "
+            + "\"i\")  = "
+            + "\"fooXarYXazY\"")));
+    Assert.assertFalse(BaseBrokerRequestHandler.isLiteralOnlyQuery(CalciteSqlParser
+        .compileToPinotQuery("SELECT count(*) from myTable where regexpReplace(col1, \"b(..)\", \"X$1Y\", 10 , 1, "
+            + "\"m\")  = "
+            + "\"fooXarYXazY\"")));
   }
 
   @Test
@@ -115,6 +153,10 @@ public class LiteralOnlyBrokerRequestTest {
     Assert.assertTrue(BaseBrokerRequestHandler.isLiteralOnlyQuery(CalciteSqlParser.compileToPinotQuery(
         "SELECT encodeUrl('key1=value 1&key2=value@!$2&key3=value%3') AS encoded, "
             + "decodeUrl('key1%3Dvalue+1%26key2%3Dvalue%40%21%242%26key3%3Dvalue%253') AS decoded")));
+    Assert.assertTrue(BaseBrokerRequestHandler.isLiteralOnlyQuery(CalciteSqlParser.compileToPinotQuery(
+        "SELECT toUtf8('hello!') AS encoded, " + "fromUtf8(toUtf8('hello!')) AS decoded")));
+    Assert.assertTrue(BaseBrokerRequestHandler.isLiteralOnlyQuery(CalciteSqlParser.compileToPinotQuery(
+        "SELECT toBase64(toUtf8('hello!')) AS encoded, " + "fromBase64('aGVsbG8h') AS decoded")));
   }
 
   @Test
@@ -123,14 +165,15 @@ public class LiteralOnlyBrokerRequestTest {
     SingleConnectionBrokerRequestHandler requestHandler =
         new SingleConnectionBrokerRequestHandler(new PinotConfiguration(), null, ACCESS_CONTROL_FACTORY, null, null,
             new BrokerMetrics("", PinotMetricUtils.getPinotMetricsRegistry(), true, Collections.emptySet()),
-            null, null);
+            null, null, mock(ServerRoutingStatsManager.class));
+
     long randNum = RANDOM.nextLong();
     byte[] randBytes = new byte[12];
     RANDOM.nextBytes(randBytes);
     String ranStr = BytesUtils.toHexString(randBytes);
-    JsonNode request = new ObjectMapper().readTree(String.format("{\"sql\":\"SELECT %d, '%s'\"}", randNum, ranStr));
+    JsonNode request = JsonUtils.stringToJsonNode(String.format("{\"sql\":\"SELECT %d, '%s'\"}", randNum, ranStr));
     RequestContext requestStats = Tracing.getTracer().createRequestScope();
-    BrokerResponseNative brokerResponse = requestHandler.handleRequest(request, null, requestStats);
+    BrokerResponse brokerResponse = requestHandler.handleRequest(request, null, requestStats);
     Assert.assertEquals(brokerResponse.getResultTable().getDataSchema().getColumnName(0), String.format("%d", randNum));
     Assert.assertEquals(brokerResponse.getResultTable().getDataSchema().getColumnDataType(0),
         DataSchema.ColumnDataType.LONG);
@@ -150,12 +193,12 @@ public class LiteralOnlyBrokerRequestTest {
     SingleConnectionBrokerRequestHandler requestHandler =
         new SingleConnectionBrokerRequestHandler(new PinotConfiguration(), null, ACCESS_CONTROL_FACTORY, null, null,
             new BrokerMetrics("", PinotMetricUtils.getPinotMetricsRegistry(), true, Collections.emptySet()),
-            null, null);
+            null, null, mock(ServerRoutingStatsManager.class));
     long currentTsMin = System.currentTimeMillis();
-    JsonNode request = new ObjectMapper().readTree(
+    JsonNode request = JsonUtils.stringToJsonNode(
         "{\"sql\":\"SELECT now() as currentTs, fromDateTime('2020-01-01 UTC', 'yyyy-MM-dd z') as firstDayOf2020\"}");
     RequestContext requestStats = Tracing.getTracer().createRequestScope();
-    BrokerResponseNative brokerResponse = requestHandler.handleRequest(request, null, requestStats);
+    BrokerResponse brokerResponse = requestHandler.handleRequest(request, null, requestStats);
     long currentTsMax = System.currentTimeMillis();
     Assert.assertEquals(brokerResponse.getResultTable().getDataSchema().getColumnName(0), "currentTs");
     Assert.assertEquals(brokerResponse.getResultTable().getDataSchema().getColumnDataType(0),
@@ -171,7 +214,7 @@ public class LiteralOnlyBrokerRequestTest {
     Assert.assertEquals(brokerResponse.getTotalDocs(), 0);
 
     long oneHourAgoTsMin = System.currentTimeMillis() - ONE_HOUR_IN_MS;
-    request = new ObjectMapper().readTree(
+    request = JsonUtils.stringToJsonNode(
         "{\"sql\":\"SELECT ago('PT1H') as oneHourAgoTs, fromDateTime('2020-01-01 UTC', 'yyyy-MM-dd z') as "
             + "firstDayOf2020\"}");
     requestStats = Tracing.getTracer().createRequestScope();
@@ -192,7 +235,7 @@ public class LiteralOnlyBrokerRequestTest {
     Assert.assertEquals(brokerResponse.getResultTable().getRows().get(0)[1], 1577836800000L);
     Assert.assertEquals(brokerResponse.getTotalDocs(), 0);
 
-    request = new ObjectMapper().readTree(
+    request = JsonUtils.stringToJsonNode(
         "{\"sql\":\"SELECT encodeUrl('key1=value 1&key2=value@!$2&key3=value%3') AS encoded, "
             + "decodeUrl('key1%3Dvalue+1%26key2%3Dvalue%40%21%242%26key3%3Dvalue%253') AS decoded\"}");
     requestStats = Tracing.getTracer().createRequestScope();
@@ -211,6 +254,76 @@ public class LiteralOnlyBrokerRequestTest {
     Assert.assertEquals(brokerResponse.getResultTable().getRows().get(0)[1].toString(),
         "key1=value 1&key2=value@!$2&key3=value%3");
     Assert.assertEquals(brokerResponse.getTotalDocs(), 0);
+
+    request = JsonUtils.stringToJsonNode(
+        "{\"sql\":\"SELECT toBase64(toUtf8('hello!')) AS encoded, " + "fromUtf8(fromBase64('aGVsbG8h')) AS decoded\"}");
+    requestStats = Tracing.getTracer().createRequestScope();
+    brokerResponse = requestHandler.handleRequest(request, null, requestStats);
+    ResultTable resultTable = brokerResponse.getResultTable();
+    DataSchema dataSchema = resultTable.getDataSchema();
+    List<Object[]> rows = resultTable.getRows();
+    Assert.assertEquals(dataSchema.getColumnName(0), "encoded");
+    Assert.assertEquals(dataSchema.getColumnDataType(0), DataSchema.ColumnDataType.STRING);
+    Assert.assertEquals(dataSchema.getColumnName(1), "decoded");
+    Assert.assertEquals(dataSchema.getColumnDataType(1), DataSchema.ColumnDataType.STRING);
+    Assert.assertEquals(rows.size(), 1);
+    Assert.assertEquals(rows.get(0).length, 2);
+    Assert.assertEquals(rows.get(0)[0].toString(), "aGVsbG8h");
+    Assert.assertEquals(rows.get(0)[1].toString(), "hello!");
+    Assert.assertEquals(brokerResponse.getTotalDocs(), 0);
+
+    request = JsonUtils.stringToJsonNode(
+        "{\"sql\":\"SELECT fromUtf8(fromBase64(toBase64(toUtf8('nested')))) AS output\"}");
+    requestStats = Tracing.getTracer().createRequestScope();
+    brokerResponse = requestHandler.handleRequest(request, null, requestStats);
+    resultTable = brokerResponse.getResultTable();
+    dataSchema = resultTable.getDataSchema();
+    rows = resultTable.getRows();
+    Assert.assertEquals(dataSchema.getColumnName(0), "output");
+    Assert.assertEquals(dataSchema.getColumnDataType(0), DataSchema.ColumnDataType.STRING);
+    Assert.assertEquals(rows.size(), 1);
+    Assert.assertEquals(rows.get(0).length, 1);
+    Assert.assertEquals(rows.get(0)[0].toString(), "nested");
+    Assert.assertEquals(brokerResponse.getTotalDocs(), 0);
+
+    request = JsonUtils.stringToJsonNode(
+        "{\"sql\":\"SELECT toBase64(toUtf8('this is a long string that will encode to more than 76 characters using "
+            + "base64'))"
+            + " AS encoded\"}");
+    requestStats = Tracing.getTracer().createRequestScope();
+    brokerResponse = requestHandler.handleRequest(request, null, requestStats);
+    resultTable = brokerResponse.getResultTable();
+    dataSchema = resultTable.getDataSchema();
+    rows = resultTable.getRows();
+    Assert.assertEquals(dataSchema.getColumnName(0), "encoded");
+    Assert.assertEquals(dataSchema.getColumnDataType(0), DataSchema.ColumnDataType.STRING);
+    Assert.assertEquals(rows.size(), 1);
+    Assert.assertEquals(rows.get(0).length, 1);
+    Assert.assertEquals(rows.get(0)[0].toString(),
+        "dGhpcyBpcyBhIGxvbmcgc3RyaW5nIHRoYXQgd2lsbCBlbmNvZGUgdG8gbW9yZSB0aGFuIDc2IGNoYXJhY3RlcnMgdXNpbmcgYmFzZTY0");
+    Assert.assertEquals(brokerResponse.getTotalDocs(), 0);
+
+    request = JsonUtils.stringToJsonNode("{\"sql\":\"SELECT fromUtf8(fromBase64"
+        + "('dGhpcyBpcyBhIGxvbmcgc3RyaW5nIHRoYXQgd2lsbCBlbmNvZGUgdG8gbW9yZSB0aGFuIDc2IGNoYXJhY3RlcnMgdXNpbmcgYmFzZTY0"
+        + "')) AS decoded\"}");
+    requestStats = Tracing.getTracer().createRequestScope();
+    brokerResponse = requestHandler.handleRequest(request, null, requestStats);
+    resultTable = brokerResponse.getResultTable();
+    dataSchema = resultTable.getDataSchema();
+    rows = resultTable.getRows();
+    Assert.assertEquals(dataSchema.getColumnName(0), "decoded");
+    Assert.assertEquals(dataSchema.getColumnDataType(0), DataSchema.ColumnDataType.STRING);
+    Assert.assertEquals(rows.size(), 1);
+    Assert.assertEquals(rows.get(0).length, 1);
+    Assert.assertEquals(rows.get(0)[0].toString(),
+        "this is a long string that will encode to more than 76 characters using base64");
+    Assert.assertEquals(brokerResponse.getTotalDocs(), 0);
+
+    request = JsonUtils.stringToJsonNode("{\"sql\":\"SELECT fromBase64" + "(0) AS decoded\"}");
+    requestStats = Tracing.getTracer().createRequestScope();
+    brokerResponse = requestHandler.handleRequest(request, null, requestStats);
+    Assert.assertTrue(
+        brokerResponse.getProcessingExceptions().get(0).getMessage().contains("IllegalArgumentException"));
   }
 
   /** Tests for EXPLAIN PLAN for literal only queries. */
@@ -220,18 +333,19 @@ public class LiteralOnlyBrokerRequestTest {
     SingleConnectionBrokerRequestHandler requestHandler =
         new SingleConnectionBrokerRequestHandler(new PinotConfiguration(), null, ACCESS_CONTROL_FACTORY, null, null,
             new BrokerMetrics("", PinotMetricUtils.getPinotMetricsRegistry(), true, Collections.emptySet()),
-            null, null);
+            null, null, mock(ServerRoutingStatsManager.class));
 
-    ObjectMapper objectMapper = new ObjectMapper();
     // Test 1: select constant
-    JsonNode request = objectMapper.readTree("{\"sql\":\"EXPLAIN PLAN FOR SELECT 1.5, 'test'\"}");
+    JsonNode request = JsonUtils.stringToJsonNode("{\"sql\":\"EXPLAIN PLAN FOR SELECT 1.5, 'test'\"}");
     RequestContext requestStats = Tracing.getTracer().createRequestScope();
-    BrokerResponseNative brokerResponse = requestHandler.handleRequest(request, null, requestStats);
+    BrokerResponse brokerResponse = requestHandler.handleRequest(request, null, requestStats);
 
     checkExplainResultSchema(brokerResponse.getResultTable().getDataSchema(),
         new String[]{"Operator", "Operator_Id", "Parent_Id"},
-        new DataSchema.ColumnDataType[]{DataSchema.ColumnDataType.STRING, DataSchema.ColumnDataType.INT,
-            DataSchema.ColumnDataType.INT});
+        new DataSchema.ColumnDataType[]{
+            DataSchema.ColumnDataType.STRING, DataSchema.ColumnDataType.INT,
+            DataSchema.ColumnDataType.INT
+        });
 
     Assert.assertEquals(brokerResponse.getResultTable().getRows().size(), 1);
     Assert.assertEquals(brokerResponse.getResultTable().getRows().get(0),
@@ -240,7 +354,7 @@ public class LiteralOnlyBrokerRequestTest {
 
     // Test 2: invoke compile time function -> literal only
     long currentTsMin = System.currentTimeMillis();
-    request = objectMapper.readTree(
+    request = JsonUtils.stringToJsonNode(
         "{\"sql\":\"EXPLAIN PLAN FOR SELECT 6+8 as addition, fromDateTime('2020-01-01 UTC', 'yyyy-MM-dd z') as "
             + "firstDayOf2020\"}");
     requestStats = Tracing.getTracer().createRequestScope();
@@ -248,8 +362,10 @@ public class LiteralOnlyBrokerRequestTest {
 
     checkExplainResultSchema(brokerResponse.getResultTable().getDataSchema(),
         new String[]{"Operator", "Operator_Id", "Parent_Id"},
-        new DataSchema.ColumnDataType[]{DataSchema.ColumnDataType.STRING, DataSchema.ColumnDataType.INT,
-            DataSchema.ColumnDataType.INT});
+        new DataSchema.ColumnDataType[]{
+            DataSchema.ColumnDataType.STRING, DataSchema.ColumnDataType.INT,
+            DataSchema.ColumnDataType.INT
+        });
 
     Assert.assertEquals(brokerResponse.getResultTable().getRows().size(), 1);
     Assert.assertEquals(brokerResponse.getResultTable().getRows().get(0),

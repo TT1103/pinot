@@ -19,15 +19,25 @@
 package org.apache.pinot.controller.api.resources;
 
 import com.fasterxml.jackson.core.JsonProcessingException;
+import com.fasterxml.jackson.databind.JsonNode;
+import com.google.common.collect.HashBiMap;
 import io.swagger.annotations.Api;
+import io.swagger.annotations.ApiKeyAuthDefinition;
 import io.swagger.annotations.ApiOperation;
 import io.swagger.annotations.ApiParam;
+import io.swagger.annotations.Authorization;
+import io.swagger.annotations.SecurityDefinition;
+import io.swagger.annotations.SwaggerDefinition;
+import java.io.IOException;
+import java.net.URI;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.concurrent.Executor;
+import java.util.stream.Collectors;
 import javax.annotation.Nullable;
 import javax.inject.Inject;
 import javax.ws.rs.DELETE;
@@ -43,12 +53,19 @@ import javax.ws.rs.QueryParam;
 import javax.ws.rs.container.AsyncResponse;
 import javax.ws.rs.container.Suspended;
 import javax.ws.rs.core.Context;
+import javax.ws.rs.core.HttpHeaders;
 import javax.ws.rs.core.MediaType;
 import javax.ws.rs.core.Response;
+import javax.ws.rs.core.UriInfo;
+import org.apache.commons.httpclient.HttpConnectionManager;
 import org.apache.commons.lang3.exception.ExceptionUtils;
+import org.apache.helix.model.InstanceConfig;
 import org.apache.helix.task.TaskPartitionState;
 import org.apache.helix.task.TaskState;
 import org.apache.pinot.common.exception.TableNotFoundException;
+import org.apache.pinot.common.minion.BaseTaskGeneratorInfo;
+import org.apache.pinot.common.minion.TaskManagerStatusCache;
+import org.apache.pinot.controller.ControllerConf;
 import org.apache.pinot.controller.api.access.AccessType;
 import org.apache.pinot.controller.api.access.Authenticate;
 import org.apache.pinot.controller.api.exception.ControllerApplicationException;
@@ -56,10 +73,13 @@ import org.apache.pinot.controller.api.exception.NoTaskMetadataException;
 import org.apache.pinot.controller.api.exception.NoTaskScheduledException;
 import org.apache.pinot.controller.api.exception.TaskAlreadyExistsException;
 import org.apache.pinot.controller.api.exception.UnknownTaskTypeException;
+import org.apache.pinot.controller.helix.core.PinotHelixResourceManager;
 import org.apache.pinot.controller.helix.core.minion.PinotHelixTaskResourceManager;
 import org.apache.pinot.controller.helix.core.minion.PinotTaskManager;
+import org.apache.pinot.controller.util.CompletionServiceHelper;
 import org.apache.pinot.core.minion.PinotTaskConfig;
 import org.apache.pinot.spi.config.task.AdhocTaskConfig;
+import org.apache.pinot.spi.utils.JsonUtils;
 import org.glassfish.grizzly.http.server.Request;
 import org.glassfish.jersey.server.ManagedAsync;
 import org.quartz.CronTrigger;
@@ -74,6 +94,8 @@ import org.quartz.Trigger;
 import org.quartz.impl.matchers.GroupMatcher;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+
+import static org.apache.pinot.spi.utils.CommonConstants.SWAGGER_AUTHORIZATION_KEY;
 
 
 /**
@@ -95,7 +117,9 @@ import org.slf4j.LoggerFactory;
  *   <li>DELETE '/tasks/{taskType}': Delete all tasks (as well as the task queue) for the given task type</li>
  * </ul>
  */
-@Api(tags = Constants.TASK_TAG)
+@Api(tags = Constants.TASK_TAG, authorizations = {@Authorization(value = SWAGGER_AUTHORIZATION_KEY)})
+@SwaggerDefinition(securityDefinition = @SecurityDefinition(apiKeyAuthDefinitions = @ApiKeyAuthDefinition(name =
+    HttpHeaders.AUTHORIZATION, in = ApiKeyAuthDefinition.ApiKeyLocation.HEADER, key = SWAGGER_AUTHORIZATION_KEY)))
 @Path("/")
 public class PinotTaskRestletResource {
   public static final Logger LOGGER = LoggerFactory.getLogger(PinotTaskRestletResource.class);
@@ -108,6 +132,24 @@ public class PinotTaskRestletResource {
 
   @Inject
   PinotTaskManager _pinotTaskManager;
+
+  @Inject
+  TaskManagerStatusCache _taskManagerStatusCache;
+
+  @Inject
+  PinotHelixResourceManager _pinotHelixResourceManager;
+
+  @Inject
+  Executor _executor;
+
+  @Inject
+  HttpConnectionManager _connectionManager;
+
+  @Inject
+  ControllerConf _controllerConf;
+
+  @Context
+  private UriInfo _uriInfo;
 
   @GET
   @Path("/tasks/tasktypes")
@@ -201,9 +243,79 @@ public class PinotTaskRestletResource {
   @ApiOperation("Fetch information for all the tasks for the given task type")
   public Map<String, PinotHelixTaskResourceManager.TaskDebugInfo> getTasksDebugInfo(
       @ApiParam(value = "Task type", required = true) @PathParam("taskType") String taskType,
-      @ApiParam(value = "verbosity (By default, prints for running and error tasks. Value of >0 prints for all tasks)")
+      @ApiParam(value = "verbosity (Prints information for all the tasks for the given task type."
+          + "By default, only prints subtask details for running and error tasks. "
+          + "Value of > 0 prints subtask details for all tasks)")
       @DefaultValue("0") @QueryParam("verbosity") int verbosity) {
     return _pinotHelixTaskResourceManager.getTasksDebugInfo(taskType, verbosity);
+  }
+
+  @GET
+  @Path("/tasks/{taskType}/{tableNameWithType}/debug")
+  @ApiOperation("Fetch information for all the tasks for the given task type and table")
+  public Map<String, PinotHelixTaskResourceManager.TaskDebugInfo> getTasksDebugInfo(
+      @ApiParam(value = "Task type", required = true) @PathParam("taskType") String taskType,
+      @ApiParam(value = "Table name with type", required = true) @PathParam("tableNameWithType")
+          String tableNameWithType,
+      @ApiParam(value = "verbosity (Prints information for all the tasks for the given task type and table."
+          + "By default, only prints subtask details for running and error tasks. "
+          + "Value of > 0 prints subtask details for all tasks)")
+      @DefaultValue("0") @QueryParam("verbosity") int verbosity) {
+    return _pinotHelixTaskResourceManager.getTasksDebugInfoByTable(taskType, tableNameWithType, verbosity);
+  }
+
+  @GET
+  @Produces(MediaType.APPLICATION_JSON)
+  @Path("/tasks/generator/{tableNameWithType}/{taskType}/debug")
+  @ApiOperation("Fetch task generation information for the recent runs of the given task for the given table")
+  public String getTaskGenerationDebugInto(
+      @Context HttpHeaders httpHeaders,
+      @ApiParam(value = "Task type", required = true) @PathParam("taskType") String taskType,
+      @ApiParam(value = "Table name with type", required = true) @PathParam("tableNameWithType")
+          String tableNameWithType,
+      @ApiParam(value = "Whether to only lookup local cache for logs", defaultValue = "false") @QueryParam("localOnly")
+          boolean localOnly)
+      throws JsonProcessingException {
+    if (localOnly) {
+      BaseTaskGeneratorInfo taskGeneratorMostRecentRunInfo =
+          _taskManagerStatusCache.fetchTaskGeneratorInfo(tableNameWithType, taskType);
+      if (taskGeneratorMostRecentRunInfo == null) {
+        throw new ControllerApplicationException(LOGGER, "Task generation information not found",
+            Response.Status.NOT_FOUND);
+      }
+
+      return JsonUtils.objectToString(taskGeneratorMostRecentRunInfo);
+    }
+
+    // Call all controllers
+    List<InstanceConfig> controllers = _pinotHelixResourceManager.getAllControllerInstanceConfigs();
+    // Relying on original schema that was used to query the controller
+    URI uri = _uriInfo.getRequestUri();
+    String scheme = uri.getScheme();
+    List<String> controllerUrls = controllers.stream().map(controller -> {
+      return String.format("%s://%s:%d/tasks/generator/%s/%s/debug?localOnly=true", scheme, controller.getHostName(),
+          Integer.parseInt(controller.getPort()), tableNameWithType, taskType);
+    }).collect(Collectors.toList());
+
+    CompletionServiceHelper completionServiceHelper =
+        new CompletionServiceHelper(_executor, _connectionManager, HashBiMap.create(0));
+    Map<String, String> requestHeaders = new HashMap<>();
+    httpHeaders.getRequestHeaders().keySet().forEach(header -> {
+      requestHeaders.put(header, httpHeaders.getHeaderString(header));
+    });
+    CompletionServiceHelper.CompletionServiceResponse serviceResponse =
+        completionServiceHelper.doMultiGetRequest(controllerUrls, null, true, requestHeaders, 10000);
+
+    List<JsonNode> result = new ArrayList<>();
+    serviceResponse._httpResponses.values().forEach(resp -> {
+      try {
+        result.add(JsonUtils.stringToJsonNode(resp));
+      } catch (IOException e) {
+        LOGGER.error("Failed to parse controller response {}", resp, e);
+      }
+    });
+
+    return JsonUtils.objectToString(result);
   }
 
   @GET
@@ -211,7 +323,9 @@ public class PinotTaskRestletResource {
   @ApiOperation("Fetch information for the given task name")
   public PinotHelixTaskResourceManager.TaskDebugInfo getTaskDebugInfo(
       @ApiParam(value = "Task name", required = true) @PathParam("taskName") String taskName,
-      @ApiParam(value = "verbosity (By default, prints for running and error tasks. Value of >0 prints for all tasks)")
+      @ApiParam(value = "verbosity (Prints information for the given task name."
+          + "By default, only prints subtask details for running and error tasks. "
+          + "Value of > 0 prints subtask details for all tasks)")
       @DefaultValue("0") @QueryParam("verbosity") int verbosity) {
     return _pinotHelixTaskResourceManager.getTaskDebugInfo(taskName, verbosity);
   }
@@ -292,6 +406,39 @@ public class PinotTaskRestletResource {
       @ApiParam(value = "Sub task names separated by comma") @QueryParam("subtaskNames") @Nullable
           String subtaskNames) {
     return _pinotHelixTaskResourceManager.getSubtaskConfigs(taskName, subtaskNames);
+  }
+
+  @GET
+  @Path("/tasks/subtask/{taskName}/progress")
+  @ApiOperation("Get progress of specified sub tasks for the given task tracked by worker in memory")
+  public Map<String, String> getSubtaskProgress(@Context HttpHeaders httpHeaders,
+      @ApiParam(value = "Task name", required = true) @PathParam("taskName") String taskName,
+      @ApiParam(value = "Sub task names separated by comma") @QueryParam("subtaskNames") @Nullable
+          String subtaskNames) {
+    // Relying on original schema that was used to query the controller
+    String scheme = _uriInfo.getRequestUri().getScheme();
+    List<InstanceConfig> workers = _pinotHelixResourceManager.getAllMinionInstanceConfigs();
+    Map<String, String> workerEndpoints = new HashMap<>();
+    for (InstanceConfig worker : workers) {
+      workerEndpoints.put(worker.getId(),
+          String.format("%s://%s:%d", scheme, worker.getHostName(), Integer.parseInt(worker.getPort())));
+    }
+    Map<String, String> requestHeaders = new HashMap<>();
+    httpHeaders.getRequestHeaders().keySet().forEach(header -> {
+      requestHeaders.put(header, httpHeaders.getHeaderString(header));
+    });
+    int timeoutMs = _controllerConf.getMinionAdminRequestTimeoutSeconds() * 1000;
+    try {
+      return _pinotHelixTaskResourceManager
+          .getSubtaskProgress(taskName, subtaskNames, _executor, _connectionManager, workerEndpoints, requestHeaders,
+              timeoutMs);
+    } catch (UnknownTaskTypeException | NoTaskScheduledException e) {
+      throw new ControllerApplicationException(LOGGER, "Not task with name: " + taskName, Response.Status.NOT_FOUND, e);
+    } catch (Exception e) {
+      throw new ControllerApplicationException(LOGGER, String
+          .format("Failed to get worker side progress for task: %s due to error: %s", taskName,
+              ExceptionUtils.getStackTrace(e)), Response.Status.INTERNAL_SERVER_ERROR, e);
+    }
   }
 
   @GET
@@ -385,6 +532,8 @@ public class PinotTaskRestletResource {
           triggerMap.put("RepeatInterval", simpleTrigger.getRepeatInterval());
           triggerMap.put("RepeatCount", simpleTrigger.getRepeatCount());
           triggerMap.put("TimesTriggered", simpleTrigger.getTimesTriggered());
+          triggerMap.put("NextFireTime", simpleTrigger.getNextFireTime());
+          triggerMap.put("PreviousFireTime", simpleTrigger.getPreviousFireTime());
         } else if (trigger instanceof CronTrigger) {
           CronTrigger cronTrigger = (CronTrigger) trigger;
           triggerMap.put("TriggerType", CronTrigger.class.getSimpleName());

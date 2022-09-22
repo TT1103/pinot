@@ -33,7 +33,7 @@ import 'codemirror/addon/hint/show-hint';
 import 'codemirror/addon/hint/sql-hint';
 import 'codemirror/addon/hint/show-hint.css';
 import NativeCodeMirror from 'codemirror';
-import _ from 'lodash';
+import { forEach, uniqBy, range as _range } from 'lodash';
 import FormControlLabel from '@material-ui/core/FormControlLabel';
 import Switch from '@material-ui/core/Switch';
 import exportFromJSON from 'export-from-json';
@@ -190,8 +190,11 @@ const QueryPage = () => {
     records: [],
   });
 
+  const [warnings, setWarnings] = useState<Array<string>>([]);
+
   const [checked, setChecked] = React.useState({
     tracing: queryParam.get('tracing') === 'true',
+    useMSE: queryParam.get('useMSE') === 'true',
     showResultJSON: false,
   });
 
@@ -226,7 +229,7 @@ const QueryPage = () => {
     }
     const query = cm.getValue();
     const querySplit = query.split(/\r?\n/);
-    _.forEach(selections, (range) => {
+    forEach(selections, (range) => {
       // anchor and head are based on where the selection starts/ends, but for the purpose
       // of determining the line number range of the selection, we need start/end in order.
       const start = Math.min(range.anchor.line, range.head.line);
@@ -240,7 +243,7 @@ const QueryPage = () => {
       if (isLastLineFirstChar && !isSingleLineSelection) {
         end = end - 1;
       }
-      const isEntireSelectionCommented = _.range(start, end + 1).every((line) => {
+      const isEntireSelectionCommented = _range(start, end + 1).every((line) => {
         return querySplit[line].startsWith("--") || querySplit[line].trim().length === 0;
       });
 
@@ -268,19 +271,24 @@ const QueryPage = () => {
     setQueryLoader(true);
     queryExecuted.current = true;
     let params;
-    let timeoutStr = '';
+    let queryOptions = '';
     if(queryTimeout){
-      timeoutStr = ` option(timeoutMs=${queryTimeout})`
+      queryOptions += `timeoutMs=${queryTimeout}`;
+    }
+    if(checked.useMSE){
+      queryOptions += `useMultistageEngine=true`;
     }
     const finalQuery = `${query || inputQuery.trim()}`;
     params = JSON.stringify({
-      sql: `${finalQuery}${timeoutStr}`,
+      sql: `${finalQuery}`,
       trace: checked.tracing,
+      queryOptions: `${queryOptions}`,
     });
 
     if(finalQuery !== ''){
       queryParam.set('query', finalQuery);
       queryParam.set('tracing', checked.tracing.toString());
+      queryParam.set('useMSE', checked.useMSE.toString());
       if(queryTimeout !== undefined && queryTimeout !== ''){
         queryParam.set('timeout', queryTimeout.toString());
       }
@@ -290,14 +298,30 @@ const QueryPage = () => {
       })
     }
 
-    const results = await PinotMethodUtils.getQueryResults(params, checked);
+    const results = await PinotMethodUtils.getQueryResults(params);
     setResultError(results.error || '');
     setResultData(results.result || { columns: [], records: [] });
     setQueryStats(results.queryStats || { columns: responseStatCols, records: [] });
     setOutputResult(JSON.stringify(results.data, null, 2) || '');
+    setWarnings(extractWarnings(results));
     setQueryLoader(false);
     queryExecuted.current = false;
   };
+
+  const extractWarnings = (result) => {
+    const warnings: Array<string> = [];
+    const numSegmentsPrunedInvalid = result.data.numSegmentsPrunedInvalid;
+    if (numSegmentsPrunedInvalid) {
+      warnings.push(`There are ${numSegmentsPrunedInvalid} invalid segment/s. This usually means that they were `
+         + `created with an older schema. `
+         + `Please reload the table in order to refresh these segments to the new schema.`);
+    }
+    if (checked.useMSE) {
+      warnings.push(`Using V2 Multi-Stage Query Engine. This is an experimental feature. Please report any bugs to `
+          + `Apache Pinot Slack channel.`);
+    }
+    return warnings;
+  }
 
   const fetchSQLData = async (tableName) => {
     setQueryLoader(true);
@@ -363,6 +387,7 @@ const QueryPage = () => {
       setInputQuery(query);
       setChecked({
         tracing: queryParam.get('tracing') === 'true',
+        useMSE: queryParam.get('useMse') === 'true',
         showResultJSON: checked.showResultJSON,
       });
       setQueryTimeout(Number(queryParam.get('timeout') || '') || '');
@@ -409,7 +434,7 @@ const QueryPage = () => {
 
     Array.prototype.push.apply(defaultHint.list, finalList);
 
-    defaultHint.list = _.uniqBy(defaultHint.list, 'text');
+    defaultHint.list = uniqBy(defaultHint.list, 'text');
     return defaultHint;
   };
 
@@ -478,6 +503,16 @@ const QueryPage = () => {
                 Tracing
               </Grid>
 
+              <Grid item xs={2}>
+                <Checkbox
+                    name="useMSE"
+                    color="primary"
+                    onChange={handleChange}
+                    checked={checked.useMSE}
+                />
+                Use V2 Engine
+              </Grid>
+
               <Grid item xs={3}>
                 <FormControl fullWidth={true} className={classes.timeoutControl}>
                   <InputLabel htmlFor="my-input">Timeout (in Milliseconds)</InputLabel>
@@ -510,6 +545,14 @@ const QueryPage = () => {
                       />
                     </Grid>
                 ) : null}
+
+                {
+                  warnings.map(warn =>
+                                   <Alert severity="warning" className={classes.sqlError}>
+                                     {warn}
+                                   </Alert>
+                  )
+                }
 
                 {resultError ? (
                   <Alert severity="error" className={classes.sqlError}>
@@ -575,7 +618,6 @@ const QueryPage = () => {
                             <CustomizedTables
                               title="Query Result"
                               data={resultData}
-                              isPagination
                               isSticky={true}
                               showSearchBox={true}
                               inAccordionFormat={true}

@@ -50,6 +50,7 @@ public class PinotDriver implements Driver {
   public static final String DEFAULT_TENANT = "DefaultTenant";
   public static final String INFO_SCHEME = "scheme";
   public static final String INFO_HEADERS = "headers";
+
   private SSLContext _sslContext = null;
 
   public PinotDriver() { }
@@ -59,11 +60,32 @@ public class PinotDriver implements Driver {
     _sslContext = sslContext;
   }
 
+  /**
+   * Created connection to Pinot Controller from provided properties.
+   * The following properties can be provided -
+   * tenant - Specify the tenant for which this connection is being created. If not provided, DefaultTenant is used.
+   * The connection cannot handle queries for tables which are not present in the specified tenant.
+   * headers.Authorization - base64 token to query pinot. This is required in case Auth is enabled on pinot cluster.
+   * user - Name of the user for which auth is enabled.
+   * password - Password associated with the user for which auth is enabled.
+   * You can also specify username and password in the URL, e.g. jdbc:pinot://localhost:9000?user=Foo&password=Bar
+   * If username and password are specified at multiple places, the precedence takes place in the following order
+   * (header.Authorization property) > (username and password in URL) > (user and password specified in properties)
+   * @param url  jdbc connection url containing pinot controller machine host:port.
+   * example - jdbc:pinot://localhost:9000
+   * @param info properties required for creating connection
+   * @return JDBC connection object to query pinot
+   * @throws SQLException
+   */
   @Override
   public Connection connect(String url, Properties info)
       throws SQLException {
     try {
       LOGGER.info("Initiating connection to database for url: " + url);
+
+      Map<String, String> urlParams = DriverUtils.getURLParams(url);
+      info.putAll(urlParams);
+
       JsonAsyncHttpPinotClientTransportFactory factory = new JsonAsyncHttpPinotClientTransportFactory();
       PinotControllerTransportFactory pinotControllerTransportFactory = new PinotControllerTransportFactory();
 
@@ -81,25 +103,32 @@ public class PinotDriver implements Driver {
         }
       }
 
-      Map<String, String> headers =
-          info.entrySet().stream().filter(entry -> entry.getKey().toString().startsWith(INFO_HEADERS + ".")).map(
-                  entry -> Pair
-                      .of(entry.getKey().toString().substring(INFO_HEADERS.length() + 1), entry.getValue().toString()))
-              .collect(Collectors.toMap(Pair::getKey, Pair::getValue));
+      Map<String, String> headers = getHeadersFromProperties(info);
+
+      DriverUtils.handleAuth(info, headers);
 
       if (!headers.isEmpty()) {
         factory.setHeaders(headers);
         pinotControllerTransportFactory.setHeaders(headers);
       }
 
-      PinotClientTransport pinotClientTransport = factory.buildTransport();
-      PinotControllerTransport pinotControllerTransport = pinotControllerTransportFactory.buildTransport();
+      PinotClientTransport pinotClientTransport = factory.withConnectionProperties(info).buildTransport();
+      PinotControllerTransport pinotControllerTransport = pinotControllerTransportFactory
+              .withConnectionProperties(info)
+              .buildTransport();
       String controllerUrl = DriverUtils.getControllerFromURL(url);
       String tenant = info.getProperty(INFO_TENANT, DEFAULT_TENANT);
       return new PinotConnection(info, controllerUrl, pinotClientTransport, tenant, pinotControllerTransport);
     } catch (Exception e) {
       throw new SQLException(String.format("Failed to connect to url : %s", url), e);
     }
+  }
+
+  private Map<String, String> getHeadersFromProperties(Properties info) {
+    return info.entrySet().stream().filter(entry -> entry.getKey().toString().startsWith(INFO_HEADERS + ".")).map(
+            entry -> Pair.of(entry.getKey().toString().substring(INFO_HEADERS.length() + 1),
+                entry.getValue().toString()))
+        .collect(Collectors.toMap(Pair::getKey, Pair::getValue));
   }
 
   @Override

@@ -23,8 +23,6 @@ import com.fasterxml.jackson.annotation.JsonIgnore;
 import com.fasterxml.jackson.annotation.JsonSetter;
 import com.fasterxml.jackson.annotation.Nulls;
 import com.fasterxml.jackson.databind.JsonNode;
-import com.fasterxml.jackson.databind.ObjectMapper;
-import com.fasterxml.jackson.databind.ObjectReader;
 import com.google.common.annotations.VisibleForTesting;
 import java.io.IOException;
 import java.util.HashMap;
@@ -59,6 +57,7 @@ import org.apache.pinot.spi.data.DimensionFieldSpec;
 import org.apache.pinot.spi.data.FieldSpec;
 import org.apache.pinot.spi.data.MetricFieldSpec;
 import org.apache.pinot.spi.data.Schema;
+import org.apache.pinot.spi.utils.JsonUtils;
 import org.apache.pinot.sql.parsers.CalciteSqlCompiler;
 import org.apache.pinot.sql.parsers.CalciteSqlParser;
 import org.apache.pinot.sql.parsers.SqlCompilationException;
@@ -67,6 +66,7 @@ import org.slf4j.LoggerFactory;
 
 import static java.lang.Math.max;
 import static org.apache.pinot.controller.recommender.rules.io.params.RecommenderConstants.*;
+import static org.apache.pinot.controller.recommender.rules.io.params.RecommenderConstants.FlagQueryRuleParams.ERROR_INVALID_COLUMN;
 import static org.apache.pinot.controller.recommender.rules.io.params.RecommenderConstants.FlagQueryRuleParams.ERROR_INVALID_QUERY;
 
 
@@ -135,6 +135,7 @@ public class InputManager {
     put(FieldSpec.DataType.DOUBLE, Double.BYTES);
     put(FieldSpec.DataType.BYTES, Byte.BYTES);
     put(FieldSpec.DataType.STRING, Character.BYTES);
+    put(FieldSpec.DataType.JSON, Character.BYTES);
     put(FieldSpec.DataType.BOOLEAN, Integer.BYTES); // Stored internally as an INTEGER
     put(null, DEFAULT_NULL_SIZE);
   }};
@@ -171,6 +172,22 @@ public class InputManager {
         PinotQuery pinotQuery = CalciteSqlParser.compileToPinotQuery(queryString);
         _queryOptimizer.optimize(pinotQuery, _schema);
         QueryContext queryContext = QueryContextConverterUtils.getQueryContext(pinotQuery);
+
+        // Flag the queries having in filter columns not appear in schema
+        // to exclude user input like select i from tableName where a = xyz and t > 500
+        Set<String> filterColumns = new HashSet<>();
+        if (queryContext.getFilter() != null) {
+          // get in filter column names, excluding literals, etc
+          queryContext.getFilter().getColumns(filterColumns);
+          // remove those appear in schema
+          filterColumns.removeAll(_colNameToIntMap.keySet());
+          // flag if there are columns left
+          if (!filterColumns.isEmpty()) {
+            invalidQueries.add(queryString);
+            _overWrittenConfigs.getFlaggedQueries().add(queryString, ERROR_INVALID_COLUMN + filterColumns);
+          }
+        }
+
         _parsedQueries.put(queryString,
             Triple.of(_queryWeightMap.get(queryString), CalciteSqlCompiler.convertToBrokerRequest(pinotQuery),
                 queryContext));
@@ -204,15 +221,16 @@ public class InputManager {
     String sortedColumn = _overWrittenConfigs.getIndexConfig().getSortedColumn();
     Set<String> invertedIndexColumns = _overWrittenConfigs.getIndexConfig().getInvertedIndexColumns();
     Set<String> rangeIndexColumns = _overWrittenConfigs.getIndexConfig().getRangeIndexColumns();
+    Set<String> jsonIndexColumns = _overWrittenConfigs.getIndexConfig().getJsonIndexColumns();
     Set<String> noDictionaryColumns = _overWrittenConfigs.getIndexConfig().getNoDictionaryColumns();
 
-    /*Validate if there's conflict between NoDictionaryColumns and dimNamesWithAnyIndex*/
-    Set<String> dimNamesWithAnyIndex = new HashSet<>();
-    dimNamesWithAnyIndex.add(sortedColumn);
-    dimNamesWithAnyIndex.addAll(invertedIndexColumns);
-    dimNamesWithAnyIndex.addAll(rangeIndexColumns);
+    /*Validate if there's conflict between NoDictionaryColumns and dimNamesWithDictionaryDependentIndex*/
+    Set<String> dimNamesWithDictionaryDependentIndex = new HashSet<>();
+    dimNamesWithDictionaryDependentIndex.add(sortedColumn);
+    dimNamesWithDictionaryDependentIndex.addAll(invertedIndexColumns);
+    dimNamesWithDictionaryDependentIndex.addAll(rangeIndexColumns);
     for (String colName : noDictionaryColumns) {
-      if (dimNamesWithAnyIndex.contains(colName)) {
+      if (dimNamesWithDictionaryDependentIndex.contains(colName)) {
         throw new InvalidInputException(
             "Column {0} presents in both overwritten indices and overwritten no dictionary columns", colName);
       }
@@ -337,11 +355,9 @@ public class InputManager {
   @JsonSetter(nulls = Nulls.SKIP)
   public void setSchema(JsonNode jsonNode)
       throws IOException {
-    ObjectReader reader = new ObjectMapper().readerFor(Schema.class);
-    _schema = reader.readValue(jsonNode);
+    _schema = JsonUtils.jsonNodeToObject(jsonNode, Schema.class);
     SchemaUtils.validate(_schema);
-    reader = new ObjectMapper().readerFor(SchemaWithMetaData.class);
-    _schemaWithMetaData = reader.readValue(jsonNode);
+    _schemaWithMetaData = JsonUtils.jsonNodeToObject(jsonNode, SchemaWithMetaData.class);
     _schemaWithMetaData.getDimensionFieldSpecs().forEach(fieldMetadata -> {
       _metaDataMap.put(fieldMetadata.getName(), fieldMetadata);
     });

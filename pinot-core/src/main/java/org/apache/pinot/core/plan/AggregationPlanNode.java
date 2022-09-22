@@ -28,8 +28,7 @@ import org.apache.commons.lang3.tuple.Pair;
 import org.apache.pinot.common.request.context.ExpressionContext;
 import org.apache.pinot.common.request.context.FilterContext;
 import org.apache.pinot.core.common.Operator;
-import org.apache.pinot.core.operator.BaseOperator;
-import org.apache.pinot.core.operator.blocks.IntermediateResultsBlock;
+import org.apache.pinot.core.operator.blocks.results.AggregationResultsBlock;
 import org.apache.pinot.core.operator.filter.BaseFilterOperator;
 import org.apache.pinot.core.operator.filter.CombinedFilterOperator;
 import org.apache.pinot.core.operator.query.AggregationOperator;
@@ -59,9 +58,9 @@ import static org.apache.pinot.segment.spi.AggregationFunctionType.*;
 @SuppressWarnings("rawtypes")
 public class AggregationPlanNode implements PlanNode {
   private static final EnumSet<AggregationFunctionType> DICTIONARY_BASED_FUNCTIONS =
-      EnumSet.of(MIN, MINMV, MAX, MAXMV, MINMAXRANGE, MINMAXRANGEMV, DISTINCTCOUNT, DISTINCTCOUNTMV,
-          DISTINCTCOUNTHLL, DISTINCTCOUNTHLLMV, DISTINCTCOUNTRAWHLL, DISTINCTCOUNTRAWHLLMV,
-          SEGMENTPARTITIONEDDISTINCTCOUNT, DISTINCTCOUNTSMARTHLL);
+      EnumSet.of(MIN, MINMV, MAX, MAXMV, MINMAXRANGE, MINMAXRANGEMV, DISTINCTCOUNT, DISTINCTCOUNTMV, DISTINCTCOUNTHLL,
+          DISTINCTCOUNTHLLMV, DISTINCTCOUNTRAWHLL, DISTINCTCOUNTRAWHLLMV, SEGMENTPARTITIONEDDISTINCTCOUNT,
+          DISTINCTCOUNTSMARTHLL);
 
   // DISTINCTCOUNT excluded because consuming segment metadata contains unknown cardinality when there is no dictionary
   private static final EnumSet<AggregationFunctionType> METADATA_BASED_FUNCTIONS =
@@ -76,7 +75,7 @@ public class AggregationPlanNode implements PlanNode {
   }
 
   @Override
-  public Operator<IntermediateResultsBlock> run() {
+  public Operator<AggregationResultsBlock> run() {
     assert _queryContext.getAggregationFunctions() != null;
     return _queryContext.isHasFilteredAggregations() ? buildFilteredAggOperator() : buildNonFilteredAggOperator();
   }
@@ -84,7 +83,7 @@ public class AggregationPlanNode implements PlanNode {
   /**
    * Build the operator to be used for filtered aggregations
    */
-  private BaseOperator<IntermediateResultsBlock> buildFilteredAggOperator() {
+  private FilteredAggregationOperator buildFilteredAggOperator() {
     int numTotalDocs = _indexSegment.getSegmentMetadata().getTotalDocs();
     // Build the operator chain for the main predicate
     Pair<FilterPlanNode, BaseFilterOperator> filterOperatorPair = buildFilterOperator(_queryContext.getFilter());
@@ -99,8 +98,8 @@ public class AggregationPlanNode implements PlanNode {
    * @param mainTransformOperator Transform operator corresponding to the main predicate
    * @param numTotalDocs Number of total docs
    */
-  private BaseOperator<IntermediateResultsBlock> buildFilterOperatorInternal(
-      BaseFilterOperator mainPredicateFilterOperator, TransformOperator mainTransformOperator, int numTotalDocs) {
+  private FilteredAggregationOperator buildFilterOperatorInternal(BaseFilterOperator mainPredicateFilterOperator,
+      TransformOperator mainTransformOperator, int numTotalDocs) {
     Map<FilterContext, Pair<List<AggregationFunction>, TransformOperator>> filterContextToAggFuncsMap = new HashMap<>();
     List<AggregationFunction> nonFilteredAggregationFunctions = new ArrayList<>();
     List<Pair<AggregationFunction, FilterContext>> aggregationFunctions =
@@ -169,7 +168,7 @@ public class AggregationPlanNode implements PlanNode {
    * if the query has no filtered aggregates at all. If a query has mixed aggregates, filtered
    * aggregates code will be invoked
    */
-  public Operator<IntermediateResultsBlock> buildNonFilteredAggOperator() {
+  public Operator<AggregationResultsBlock> buildNonFilteredAggOperator() {
     assert _queryContext.getAggregationFunctions() != null;
 
     int numTotalDocs = _indexSegment.getSegmentMetadata().getTotalDocs();
@@ -178,11 +177,11 @@ public class AggregationPlanNode implements PlanNode {
     FilterPlanNode filterPlanNode = new FilterPlanNode(_indexSegment, _queryContext);
     BaseFilterOperator filterOperator = filterPlanNode.run();
 
-    if (canOptimizeFilteredCount(filterOperator, aggregationFunctions)) {
+    if (canOptimizeFilteredCount(filterOperator, aggregationFunctions) && !_queryContext.isNullHandlingEnabled()) {
       return new FastFilteredCountOperator(aggregationFunctions, filterOperator, _indexSegment.getSegmentMetadata());
     }
 
-    if (filterOperator.isResultMatchingAll()) {
+    if (filterOperator.isResultMatchingAll() && !_queryContext.isNullHandlingEnabled()) {
       if (isFitForNonScanBasedPlan(aggregationFunctions, _indexSegment)) {
         DataSource[] dataSources = new DataSource[aggregationFunctions.length];
         for (int i = 0; i < aggregationFunctions.length; i++) {
@@ -198,7 +197,7 @@ public class AggregationPlanNode implements PlanNode {
 
     // Use star-tree to solve the query if possible
     List<StarTreeV2> starTrees = _indexSegment.getStarTrees();
-    if (starTrees != null && !StarTreeUtils.isStarTreeDisabled(_queryContext)) {
+    if (starTrees != null && !_queryContext.isSkipStarTree() && !_queryContext.isNullHandlingEnabled()) {
       AggregationFunctionColumnPair[] aggregationFunctionColumnPairs =
           StarTreeUtils.extractAggregationFunctionPairs(aggregationFunctions);
       if (aggregationFunctionColumnPairs != null) {
@@ -210,8 +209,8 @@ public class AggregationPlanNode implements PlanNode {
             if (StarTreeUtils.isFitForStarTree(starTreeV2.getMetadata(), aggregationFunctionColumnPairs, null,
                 predicateEvaluatorsMap.keySet())) {
               TransformOperator transformOperator =
-                  new StarTreeTransformPlanNode(starTreeV2, aggregationFunctionColumnPairs, null,
-                      predicateEvaluatorsMap, _queryContext.getDebugOptions()).run();
+                  new StarTreeTransformPlanNode(_queryContext, starTreeV2, aggregationFunctionColumnPairs, null,
+                      predicateEvaluatorsMap).run();
               return new AggregationOperator(aggregationFunctions, transformOperator, numTotalDocs, true);
             }
           }

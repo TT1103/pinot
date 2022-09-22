@@ -31,17 +31,15 @@ import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
 import java.util.concurrent.TimeUnit;
-import org.apache.helix.PropertyPathConfig;
-import org.apache.helix.PropertyType;
-import org.apache.helix.ZNRecord;
+import org.apache.helix.PropertyPathBuilder;
 import org.apache.helix.manager.zk.ZKHelixAdmin;
-import org.apache.helix.manager.zk.ZNRecordSerializer;
 import org.apache.helix.store.zk.ZkHelixPropertyStore;
+import org.apache.helix.zookeeper.datamodel.ZNRecord;
+import org.apache.helix.zookeeper.datamodel.serializer.ZNRecordSerializer;
 import org.apache.pinot.common.metadata.ZKMetadataProvider;
 import org.apache.pinot.spi.config.table.IndexingConfig;
 import org.apache.pinot.spi.config.table.TableConfig;
 import org.apache.pinot.spi.data.DateTimeFieldSpec;
-import org.apache.pinot.spi.data.DateTimeFormatSpec;
 import org.apache.pinot.spi.data.FieldSpec;
 import org.apache.pinot.spi.data.Schema;
 import org.apache.pinot.spi.utils.JsonUtils;
@@ -118,8 +116,8 @@ public class AutoAddInvertedIndex {
     _controllerAddress = controllerAddress;
     _brokerAddress = brokerAddress;
     _helixAdmin = new ZKHelixAdmin(zkAddress);
-    _propertyStore = new ZkHelixPropertyStore<>(zkAddress, new ZNRecordSerializer(),
-        PropertyPathConfig.getPath(PropertyType.PROPERTYSTORE, clusterName));
+    _propertyStore =
+        new ZkHelixPropertyStore<>(zkAddress, new ZNRecordSerializer(), PropertyPathBuilder.propertyStore(clusterName));
     _strategy = strategy;
     _mode = mode;
   }
@@ -243,7 +241,7 @@ public class AutoAddInvertedIndex {
             tableNameWithType);
         continue;
       }
-      TimeUnit timeUnit = new DateTimeFormatSpec(dateTimeSpec.getFormat()).getColumnUnit();
+      TimeUnit timeUnit = dateTimeSpec.getFormatSpec().getColumnUnit();
       if (timeUnit != TimeUnit.DAYS) {
         LOGGER.warn("Table: {}, time column {] has non-DAYS time unit: {}", timeColumnName, timeUnit);
       }

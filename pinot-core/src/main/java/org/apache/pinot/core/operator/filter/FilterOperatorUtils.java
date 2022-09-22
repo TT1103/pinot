@@ -21,11 +21,9 @@ package org.apache.pinot.core.operator.filter;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.List;
-import java.util.Map;
-import javax.annotation.Nullable;
-import org.apache.commons.lang3.StringUtils;
 import org.apache.pinot.common.request.context.predicate.Predicate;
 import org.apache.pinot.core.operator.filter.predicate.PredicateEvaluator;
+import org.apache.pinot.core.query.request.context.QueryContext;
 import org.apache.pinot.segment.spi.datasource.DataSource;
 
 
@@ -33,14 +31,19 @@ public class FilterOperatorUtils {
   private FilterOperatorUtils() {
   }
 
-  // Debug option to enable or disable multi-value optimization
-  public static final String USE_SCAN_REORDER_OPTIMIZATION = "useScanReorderOpt";
-
   /**
    * Returns the leaf filter operator (i.e. not {@link AndFilterOperator} or {@link OrFilterOperator}).
    */
   public static BaseFilterOperator getLeafFilterOperator(PredicateEvaluator predicateEvaluator, DataSource dataSource,
       int numDocs) {
+    return getLeafFilterOperator(predicateEvaluator, dataSource, numDocs, false);
+  }
+
+  /**
+   * Returns the leaf filter operator (i.e. not {@link AndFilterOperator} or {@link OrFilterOperator}).
+   */
+  public static BaseFilterOperator getLeafFilterOperator(PredicateEvaluator predicateEvaluator, DataSource dataSource,
+      int numDocs, boolean nullHandlingEnabled) {
     if (predicateEvaluator.isAlwaysFalse()) {
       return EmptyFilterOperator.getInstance();
     } else if (predicateEvaluator.isAlwaysTrue()) {
@@ -61,7 +64,7 @@ public class FilterOperatorUtils {
       if (dataSource.getRangeIndex() != null) {
         return new RangeIndexBasedFilterOperator(predicateEvaluator, dataSource, numDocs);
       }
-      return new ScanBasedFilterOperator(predicateEvaluator, dataSource, numDocs);
+      return new ScanBasedFilterOperator(predicateEvaluator, dataSource, numDocs, nullHandlingEnabled);
     } else if (predicateType == Predicate.Type.REGEXP_LIKE) {
       if (dataSource.getFSTIndex() != null && dataSource.getDataSourceMetadata().isSorted()) {
         return new SortedIndexBasedFilterOperator(predicateEvaluator, dataSource, numDocs);
@@ -69,7 +72,7 @@ public class FilterOperatorUtils {
       if (dataSource.getFSTIndex() != null && dataSource.getInvertedIndex() != null) {
         return new BitmapBasedFilterOperator(predicateEvaluator, dataSource, numDocs);
       }
-      return new ScanBasedFilterOperator(predicateEvaluator, dataSource, numDocs);
+      return new ScanBasedFilterOperator(predicateEvaluator, dataSource, numDocs, nullHandlingEnabled);
     } else {
       if (dataSource.getDataSourceMetadata().isSorted() && dataSource.getDictionary() != null) {
         return new SortedIndexBasedFilterOperator(predicateEvaluator, dataSource, numDocs);
@@ -77,15 +80,15 @@ public class FilterOperatorUtils {
       if (dataSource.getInvertedIndex() != null) {
         return new BitmapBasedFilterOperator(predicateEvaluator, dataSource, numDocs);
       }
-      return new ScanBasedFilterOperator(predicateEvaluator, dataSource, numDocs);
+      return new ScanBasedFilterOperator(predicateEvaluator, dataSource, numDocs, nullHandlingEnabled);
     }
   }
 
   /**
    * Returns the AND filter operator or equivalent filter operator.
    */
-  public static BaseFilterOperator getAndFilterOperator(List<BaseFilterOperator> filterOperators, int numDocs,
-      @Nullable Map<String, String> debugOptions) {
+  public static BaseFilterOperator getAndFilterOperator(QueryContext queryContext,
+      List<BaseFilterOperator> filterOperators, int numDocs) {
     List<BaseFilterOperator> childFilterOperators = new ArrayList<>(filterOperators.size());
     for (BaseFilterOperator filterOperator : filterOperators) {
       if (filterOperator.isResultEmpty()) {
@@ -103,7 +106,7 @@ public class FilterOperatorUtils {
       return childFilterOperators.get(0);
     } else {
       // Return the AND filter operator with re-ordered child filter operators
-      FilterOperatorUtils.reorderAndFilterChildOperators(childFilterOperators, debugOptions);
+      FilterOperatorUtils.reorderAndFilterChildOperators(queryContext, childFilterOperators);
       return new AndFilterOperator(childFilterOperators);
     }
   }
@@ -111,8 +114,8 @@ public class FilterOperatorUtils {
   /**
    * Returns the OR filter operator or equivalent filter operator.
    */
-  public static BaseFilterOperator getOrFilterOperator(List<BaseFilterOperator> filterOperators, int numDocs,
-      @Nullable Map<String, String> debugOptions) {
+  public static BaseFilterOperator getOrFilterOperator(QueryContext queryContext,
+      List<BaseFilterOperator> filterOperators, int numDocs) {
     List<BaseFilterOperator> childFilterOperators = new ArrayList<>(filterOperators.size());
     for (BaseFilterOperator filterOperator : filterOperators) {
       if (filterOperator.isResultMatchingAll()) {
@@ -137,8 +140,8 @@ public class FilterOperatorUtils {
   /**
    * Returns the NOT filter operator or equivalent filter operator.
    */
-  public static BaseFilterOperator getNotFilterOperator(BaseFilterOperator filterOperator, int numDocs,
-      @Nullable Map<String, String> debugOptions) {
+  public static BaseFilterOperator getNotFilterOperator(QueryContext queryContext, BaseFilterOperator filterOperator,
+      int numDocs) {
     if (filterOperator.isResultMatchingAll()) {
       return EmptyFilterOperator.getInstance();
     } else if (filterOperator.isResultEmpty()) {
@@ -154,8 +157,8 @@ public class FilterOperatorUtils {
    * <p>Special filter operators such as {@link MatchAllFilterOperator} and {@link EmptyFilterOperator} should be
    * removed from the list before calling this method.
    */
-  private static void reorderAndFilterChildOperators(List<BaseFilterOperator> filterOperators,
-      @Nullable Map<String, String> debugOptions) {
+  private static void reorderAndFilterChildOperators(QueryContext queryContext,
+      List<BaseFilterOperator> filterOperators) {
     filterOperators.sort(new Comparator<BaseFilterOperator>() {
       @Override
       public int compare(BaseFilterOperator o1, BaseFilterOperator o2) {
@@ -185,7 +188,7 @@ public class FilterOperatorUtils {
           return getPriority(((NotFilterOperator) filterOperator).getChildFilterOperator());
         }
         if (filterOperator instanceof ScanBasedFilterOperator) {
-          return getScanBasedFilterPriority((ScanBasedFilterOperator) filterOperator, 5, debugOptions);
+          return getScanBasedFilterPriority(queryContext, (ScanBasedFilterOperator) filterOperator, 5);
         }
         if (filterOperator instanceof ExpressionFilterOperator) {
           return 10;
@@ -203,13 +206,12 @@ public class FilterOperatorUtils {
    * TODO: additional cost based prioritization to be added
    *
    * @param scanBasedFilterOperator the filter operator to prioritize
-   * @param debugOptions  debug-options to enable/disable the optimization
+   * @param queryContext query context
    * @return the priority to be associated with the filter
    */
-  private static int getScanBasedFilterPriority(ScanBasedFilterOperator scanBasedFilterOperator, int basePriority,
-      @Nullable Map<String, String> debugOptions) {
-    if (debugOptions != null
-        && StringUtils.compareIgnoreCase(debugOptions.get(USE_SCAN_REORDER_OPTIMIZATION), "false") == 0) {
+  private static int getScanBasedFilterPriority(QueryContext queryContext,
+      ScanBasedFilterOperator scanBasedFilterOperator, int basePriority) {
+    if (queryContext.isSkipScanFilterReorder()) {
       return basePriority;
     }
 

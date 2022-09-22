@@ -24,10 +24,11 @@ import java.util.List;
 import org.apache.pinot.common.exception.QueryException;
 import org.apache.pinot.common.proto.Server;
 import org.apache.pinot.common.utils.DataTable;
-import org.apache.pinot.core.common.datatable.DataTableBuilder;
+import org.apache.pinot.core.common.datatable.DataTableFactory;
 import org.apache.pinot.core.operator.blocks.InstanceResponseBlock;
 import org.apache.pinot.core.operator.combine.BaseCombineOperator;
 import org.apache.pinot.core.operator.streaming.StreamingResponseUtils;
+import org.apache.pinot.core.query.request.context.QueryContext;
 import org.apache.pinot.segment.spi.FetchContext;
 import org.apache.pinot.segment.spi.IndexSegment;
 
@@ -36,9 +37,10 @@ public class StreamingInstanceResponseOperator extends InstanceResponseOperator 
 
   private final StreamObserver<Server.ServerResponse> _streamObserver;
 
-  public StreamingInstanceResponseOperator(BaseCombineOperator combinedOperator, List<IndexSegment> indexSegments,
-      List<FetchContext> fetchContexts, StreamObserver<Server.ServerResponse> streamObserver) {
-    super(combinedOperator, indexSegments, fetchContexts);
+  public StreamingInstanceResponseOperator(BaseCombineOperator<?> combinedOperator, List<IndexSegment> indexSegments,
+      List<FetchContext> fetchContexts, StreamObserver<Server.ServerResponse> streamObserver,
+      QueryContext queryContext) {
+    super(combinedOperator, indexSegments, fetchContexts, queryContext);
     _streamObserver = streamObserver;
   }
 
@@ -49,11 +51,10 @@ public class StreamingInstanceResponseOperator extends InstanceResponseOperator 
     DataTable metadataOnlyDataTable;
     try {
       metadataOnlyDataTable = instanceResponseDataTable.toMetadataOnlyDataTable();
-      _streamObserver.onNext(StreamingResponseUtils.getDataResponse(
-          instanceResponseDataTable.toDataOnlyDataTable()));
+      _streamObserver.onNext(StreamingResponseUtils.getDataResponse(instanceResponseDataTable.toDataOnlyDataTable()));
     } catch (IOException e) {
       // when exception occurs in streaming, we return an error-only metadata block.
-      metadataOnlyDataTable = DataTableBuilder.getEmptyDataTable();
+      metadataOnlyDataTable = DataTableFactory.getEmptyDataTable();
       metadataOnlyDataTable.addException(QueryException.getException(QueryException.QUERY_EXECUTION_ERROR, e));
     }
     // return a metadata-only block.

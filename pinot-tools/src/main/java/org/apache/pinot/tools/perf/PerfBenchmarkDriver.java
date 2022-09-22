@@ -69,6 +69,7 @@ import org.yaml.snakeyaml.Yaml;
 public class PerfBenchmarkDriver {
   private static final Logger LOGGER = LoggerFactory.getLogger(PerfBenchmarkDriver.class);
   private static final long BROKER_TIMEOUT_MS = 60_000L;
+  private static final String BROKER_QUERY_PATH = "/query/sql";
 
   private final PerfBenchmarkDriverConf _conf;
   private final String _zkAddress;
@@ -145,8 +146,8 @@ public class PerfBenchmarkDriver {
     }
 
     // Init broker.
-    _queryUrl = StringUtils.isNotBlank(_conf.getBrokerURL()) ? _conf.getBrokerURL()
-        : "http://" + _conf.getBrokerHost() + ":" + _conf.getBrokerPort() + "/query/sql";
+    _queryUrl = StringUtils.isNotBlank(_conf.getBrokerURL()) ? _conf.getBrokerURL() + BROKER_QUERY_PATH
+        : "http://" + _conf.getBrokerHost() + ":" + _conf.getBrokerPort() + BROKER_QUERY_PATH;
 
     // Init server.
     String serverInstanceName = _conf.getServerInstanceName();
@@ -239,7 +240,7 @@ public class PerfBenchmarkDriver {
     String brokerInstanceName = "Broker_localhost_" + CommonConstants.Helix.DEFAULT_BROKER_QUERY_PORT;
 
     Map<String, Object> properties = new HashMap<>();
-    properties.put(CommonConstants.Helix.Instance.INSTANCE_ID_KEY, brokerInstanceName);
+    properties.put(CommonConstants.Broker.CONFIG_OF_BROKER_ID, brokerInstanceName);
     properties.put(CommonConstants.Broker.CONFIG_OF_BROKER_TIMEOUT_MS, BROKER_TIMEOUT_MS);
     properties.put(CommonConstants.Helix.CONFIG_OF_CLUSTER_NAME, _clusterName);
     properties.put(CommonConstants.Helix.CONFIG_OF_ZOOKEEPR_SERVER, _zkAddress);

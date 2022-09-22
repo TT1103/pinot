@@ -79,9 +79,9 @@ public class PinotSinkIntegrationTest extends BaseClusterIntegrationTest {
     batchConfigs.put(BatchConfigProperties.OUTPUT_DIR_URI, _tarDir.getAbsolutePath());
     batchConfigs.put(BatchConfigProperties.OVERWRITE_OUTPUT, "false");
     batchConfigs.put(BatchConfigProperties.PUSH_CONTROLLER_URI, _controllerBaseApiUrl);
-    IngestionConfig ingestionConfig =
-        new IngestionConfig(new BatchIngestionConfig(Collections.singletonList(batchConfigs), "APPEND", "HOURLY"), null,
-            null, null, null, null);
+    IngestionConfig ingestionConfig = new IngestionConfig();
+    ingestionConfig.setBatchIngestionConfig(
+        new BatchIngestionConfig(Collections.singletonList(batchConfigs), "APPEND", "HOURLY"));
     _tableConfig =
         new TableConfigBuilder(TableType.OFFLINE).setTableName(RAW_TABLE_NAME).setIngestionConfig(ingestionConfig)
             .build();
@@ -142,7 +142,7 @@ public class PinotSinkIntegrationTest extends BaseClusterIntegrationTest {
   private int getNumSegments()
       throws IOException {
     String jsonOutputStr = sendGetRequest(
-        _controllerRequestURLBuilder.forSegmentListAPIWithTableType(OFFLINE_TABLE_NAME, TableType.OFFLINE.toString()));
+        _controllerRequestURLBuilder.forSegmentListAPI(OFFLINE_TABLE_NAME, TableType.OFFLINE.toString()));
     JsonNode array = JsonUtils.stringToJsonNode(jsonOutputStr);
     return array.get(0).get("OFFLINE").size();
   }
@@ -150,7 +150,7 @@ public class PinotSinkIntegrationTest extends BaseClusterIntegrationTest {
   private int getTotalNumDocs()
       throws IOException {
     String jsonOutputStr = sendGetRequest(
-        _controllerRequestURLBuilder.forSegmentListAPIWithTableType(OFFLINE_TABLE_NAME, TableType.OFFLINE.toString()));
+        _controllerRequestURLBuilder.forSegmentListAPI(OFFLINE_TABLE_NAME, TableType.OFFLINE.toString()));
     JsonNode array = JsonUtils.stringToJsonNode(jsonOutputStr);
     JsonNode segments = array.get(0).get("OFFLINE");
     int totalDocCount = 0;

@@ -22,9 +22,11 @@ import java.io.File;
 import java.net.URL;
 import java.util.Collections;
 import org.apache.pinot.common.metrics.ServerMetrics;
+import org.apache.pinot.segment.local.data.manager.TableDataManager;
 import org.apache.pinot.segment.local.recordtransformer.CompositeTransformer;
 import org.apache.pinot.segment.local.upsert.PartitionUpsertMetadataManager;
-import org.apache.pinot.segment.local.upsert.TableUpsertMetadataManager;
+import org.apache.pinot.segment.local.upsert.TableUpsertMetadataManagerFactory;
+import org.apache.pinot.spi.config.table.HashFunction;
 import org.apache.pinot.spi.config.table.TableConfig;
 import org.apache.pinot.spi.config.table.TableType;
 import org.apache.pinot.spi.config.table.UpsertConfig;
@@ -34,10 +36,11 @@ import org.apache.pinot.spi.data.readers.GenericRow;
 import org.apache.pinot.spi.data.readers.RecordReader;
 import org.apache.pinot.spi.data.readers.RecordReaderFactory;
 import org.apache.pinot.spi.utils.builder.TableConfigBuilder;
-import org.mockito.Mockito;
 import org.roaringbitmap.buffer.ImmutableRoaringBitmap;
 import org.testng.Assert;
 import org.testng.annotations.Test;
+
+import static org.mockito.Mockito.mock;
 
 
 public class MutableSegmentImplUpsertTest {
@@ -49,25 +52,29 @@ public class MutableSegmentImplUpsertTest {
   private MutableSegmentImpl _mutableSegmentImpl;
   private PartitionUpsertMetadataManager _partitionUpsertMetadataManager;
 
-  private void setup(UpsertConfig.HashFunction hashFunction)
+  private void setup(HashFunction hashFunction)
       throws Exception {
     URL schemaResourceUrl = this.getClass().getClassLoader().getResource(SCHEMA_FILE_PATH);
     URL dataResourceUrl = this.getClass().getClassLoader().getResource(DATA_FILE_PATH);
     _schema = Schema.fromFile(new File(schemaResourceUrl.getFile()));
-    _tableConfig = new TableConfigBuilder(TableType.REALTIME).setTableName("testTable")
-        .setUpsertConfig(new UpsertConfig(UpsertConfig.Mode.FULL, null, null, null, hashFunction)).build();
+    UpsertConfig upsertConfigWithHash = new UpsertConfig(UpsertConfig.Mode.FULL);
+    upsertConfigWithHash.setHashFunction(hashFunction);
+    _tableConfig =
+        new TableConfigBuilder(TableType.REALTIME).setTableName("testTable").setUpsertConfig(upsertConfigWithHash)
+            .build();
     _recordTransformer = CompositeTransformer.getDefaultTransformer(_tableConfig, _schema);
     File jsonFile = new File(dataResourceUrl.getFile());
     _partitionUpsertMetadataManager =
-        new TableUpsertMetadataManager("testTable_REALTIME", Mockito.mock(ServerMetrics.class), null, hashFunction)
-            .getOrCreatePartitionManager(0);
-    _mutableSegmentImpl = MutableSegmentImplTestUtils
-        .createMutableSegmentImpl(_schema, Collections.emptySet(), Collections.emptySet(), Collections.emptySet(),
-            false, true, new UpsertConfig(UpsertConfig.Mode.FULL, null, null, null, hashFunction), "secondsSinceEpoch",
-            _partitionUpsertMetadataManager);
+        TableUpsertMetadataManagerFactory.create(_tableConfig, _schema, mock(TableDataManager.class),
+            mock(ServerMetrics.class)).getOrCreatePartitionManager(0);
+    _mutableSegmentImpl =
+        MutableSegmentImplTestUtils.createMutableSegmentImpl(_schema, Collections.emptySet(), Collections.emptySet(),
+            Collections.emptySet(), false, true, upsertConfigWithHash, "secondsSinceEpoch",
+            _partitionUpsertMetadataManager, null);
+
     GenericRow reuse = new GenericRow();
-    try (RecordReader recordReader = RecordReaderFactory
-        .getRecordReader(FileFormat.JSON, jsonFile, _schema.getColumnNames(), null)) {
+    try (RecordReader recordReader = RecordReaderFactory.getRecordReader(FileFormat.JSON, jsonFile,
+        _schema.getColumnNames(), null)) {
       while (recordReader.hasNext()) {
         recordReader.next(reuse);
         GenericRow transformedRow = _recordTransformer.transform(reuse);
@@ -80,12 +87,12 @@ public class MutableSegmentImplUpsertTest {
   @Test
   public void testHashFunctions()
       throws Exception {
-    testUpsertIngestion(UpsertConfig.HashFunction.NONE);
-    testUpsertIngestion(UpsertConfig.HashFunction.MD5);
-    testUpsertIngestion(UpsertConfig.HashFunction.MURMUR3);
+    testUpsertIngestion(HashFunction.NONE);
+    testUpsertIngestion(HashFunction.MD5);
+    testUpsertIngestion(HashFunction.MURMUR3);
   }
 
-  private void testUpsertIngestion(UpsertConfig.HashFunction hashFunction)
+  private void testUpsertIngestion(HashFunction hashFunction)
       throws Exception {
     setup(hashFunction);
     ImmutableRoaringBitmap bitmap = _mutableSegmentImpl.getValidDocIds().getMutableRoaringBitmap();

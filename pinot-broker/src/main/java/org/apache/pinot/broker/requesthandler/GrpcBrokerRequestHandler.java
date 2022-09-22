@@ -28,6 +28,7 @@ import javax.annotation.concurrent.ThreadSafe;
 import org.apache.pinot.broker.broker.AccessControlFactory;
 import org.apache.pinot.broker.queryquota.QueryQuotaManager;
 import org.apache.pinot.broker.routing.BrokerRoutingManager;
+import org.apache.pinot.common.config.GrpcConfig;
 import org.apache.pinot.common.config.TlsConfig;
 import org.apache.pinot.common.config.provider.TableCache;
 import org.apache.pinot.common.metrics.BrokerMetrics;
@@ -42,6 +43,8 @@ import org.apache.pinot.core.transport.ServerRoutingInstance;
 import org.apache.pinot.spi.config.table.TableType;
 import org.apache.pinot.spi.env.PinotConfiguration;
 import org.apache.pinot.spi.trace.RequestContext;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 
 /**
@@ -49,8 +52,9 @@ import org.apache.pinot.spi.trace.RequestContext;
  */
 @ThreadSafe
 public class GrpcBrokerRequestHandler extends BaseBrokerRequestHandler {
+  private static final Logger LOGGER = LoggerFactory.getLogger(GrpcBrokerRequestHandler.class);
 
-  private final GrpcQueryClient.Config _grpcConfig;
+  private final GrpcConfig _grpcConfig;
   private final StreamingReduceService _streamingReduceService;
   private final PinotStreamingQueryClient _streamingQueryClient;
 
@@ -59,7 +63,8 @@ public class GrpcBrokerRequestHandler extends BaseBrokerRequestHandler {
       AccessControlFactory accessControlFactory, QueryQuotaManager queryQuotaManager, TableCache tableCache,
       BrokerMetrics brokerMetrics, TlsConfig tlsConfig) {
     super(config, routingManager, accessControlFactory, queryQuotaManager, tableCache, brokerMetrics);
-    _grpcConfig = buildGrpcQueryClientConfig(config);
+    LOGGER.info("Using Grpc BrokerRequestHandler.");
+    _grpcConfig = GrpcConfig.buildGrpcQueryConfig(config);
 
     // create streaming query client
     _streamingQueryClient = new PinotStreamingQueryClient(_grpcConfig);
@@ -74,26 +79,31 @@ public class GrpcBrokerRequestHandler extends BaseBrokerRequestHandler {
 
   @Override
   public synchronized void shutDown() {
+    _streamingQueryClient.shutdown();
     _streamingReduceService.shutDown();
   }
 
   @Override
   protected BrokerResponseNative processBrokerRequest(long requestId, BrokerRequest originalBrokerRequest,
-      BrokerRequest serverBrokerRequest, @Nullable BrokerRequest offlineBrokerRequest, @Nullable Map<ServerInstance,
-      List<String>> offlineRoutingTable, @Nullable BrokerRequest realtimeBrokerRequest, @Nullable Map<ServerInstance,
-      List<String>> realtimeRoutingTable, long timeoutMs, ServerStats serverStats, RequestContext requestContext)
+      BrokerRequest serverBrokerRequest, @Nullable BrokerRequest offlineBrokerRequest,
+      @Nullable Map<ServerInstance, List<String>> offlineRoutingTable, @Nullable BrokerRequest realtimeBrokerRequest,
+      @Nullable Map<ServerInstance, List<String>> realtimeRoutingTable, long timeoutMs, ServerStats serverStats,
+      RequestContext requestContext)
       throws Exception {
     // TODO: Support failure detection
     assert offlineBrokerRequest != null || realtimeBrokerRequest != null;
     Map<ServerRoutingInstance, Iterator<Server.ServerResponse>> responseMap = new HashMap<>();
     if (offlineBrokerRequest != null) {
       assert offlineRoutingTable != null;
-      sendRequest(TableType.OFFLINE, offlineBrokerRequest, offlineRoutingTable, responseMap,
+      sendRequest(requestId, TableType.OFFLINE, offlineBrokerRequest, offlineRoutingTable, responseMap,
           requestContext.isSampledRequest());
     }
     if (realtimeBrokerRequest != null) {
       assert realtimeRoutingTable != null;
-      sendRequest(TableType.REALTIME, realtimeBrokerRequest, realtimeRoutingTable, responseMap,
+      // NOTE: When both OFFLINE and REALTIME request exist, use negative request id for REALTIME to differentiate
+      //       from the OFFLINE one
+      long realtimeRequestId = offlineBrokerRequest == null ? requestId : -requestId;
+      sendRequest(realtimeRequestId, TableType.REALTIME, realtimeBrokerRequest, realtimeRoutingTable, responseMap,
           requestContext.isSampledRequest());
     }
     return _streamingReduceService.reduceOnStreamResponse(originalBrokerRequest, responseMap, timeoutMs,
@@ -103,7 +113,7 @@ public class GrpcBrokerRequestHandler extends BaseBrokerRequestHandler {
   /**
    * Query pinot server for data table.
    */
-  private void sendRequest(TableType tableType, BrokerRequest brokerRequest,
+  private void sendRequest(long requestId, TableType tableType, BrokerRequest brokerRequest,
       Map<ServerInstance, List<String>> routingTable,
       Map<ServerRoutingInstance, Iterator<Server.ServerResponse>> responseMap, boolean trace) {
     for (Map.Entry<ServerInstance, List<String>> routingEntry : routingTable.entrySet()) {
@@ -113,34 +123,35 @@ public class GrpcBrokerRequestHandler extends BaseBrokerRequestHandler {
       int port = serverInstance.getGrpcPort();
       // TODO: enable throttling on per host bases.
       Iterator<Server.ServerResponse> streamingResponse = _streamingQueryClient.submit(serverHost, port,
-          new GrpcRequestBuilder().setSegments(segments).setBrokerRequest(brokerRequest).setEnableStreaming(true)
-              .setEnableTrace(trace));
+          new GrpcRequestBuilder().setRequestId(requestId).setBrokerId(_brokerId).setEnableTrace(trace)
+              .setEnableStreaming(true).setBrokerRequest(brokerRequest).setSegments(segments).build());
       responseMap.put(serverInstance.toServerRoutingInstance(tableType, ServerInstance.RoutingType.GRPC),
           streamingResponse);
     }
   }
 
-  // return empty config for now
-  private GrpcQueryClient.Config buildGrpcQueryClientConfig(PinotConfiguration config) {
-    return new GrpcQueryClient.Config();
-  }
-
   public static class PinotStreamingQueryClient {
     private final Map<String, GrpcQueryClient> _grpcQueryClientMap = new ConcurrentHashMap<>();
-    private final GrpcQueryClient.Config _config;
+    private final GrpcConfig _config;
 
-    public PinotStreamingQueryClient(GrpcQueryClient.Config config) {
+    public PinotStreamingQueryClient(GrpcConfig config) {
       _config = config;
     }
 
-    public Iterator<Server.ServerResponse> submit(String host, int port, GrpcRequestBuilder requestBuilder) {
+    public Iterator<Server.ServerResponse> submit(String host, int port, Server.ServerRequest serverRequest) {
       GrpcQueryClient client = getOrCreateGrpcQueryClient(host, port);
-      return client.submit(requestBuilder.build());
+      return client.submit(serverRequest);
     }
 
     private GrpcQueryClient getOrCreateGrpcQueryClient(String host, int port) {
       String key = String.format("%s_%d", host, port);
       return _grpcQueryClientMap.computeIfAbsent(key, k -> new GrpcQueryClient(host, port, _config));
+    }
+
+    public void shutdown() {
+      for (GrpcQueryClient client : _grpcQueryClientMap.values()) {
+        client.close();
+      }
     }
   }
 }

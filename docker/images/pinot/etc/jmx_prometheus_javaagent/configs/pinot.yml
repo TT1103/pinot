@@ -69,6 +69,9 @@ rules:
 - pattern: "\"org.apache.pinot.common.metrics\"<type=\"ControllerMetrics\", name=\"pinot.controller.realtimeTableCount\"><>(\\w+)"
   name: "pinot_controller_realtimeTableCount_$1"
   cache: true
+- pattern: "\"org.apache.pinot.common.metrics\"<type=\"ControllerMetrics\", name=\"pinot.controller.offlineTableCount\"><>(\\w+)"
+  name: "pinot_controller_offlineTableCount_$1"
+  cache: true
 - pattern: "\"org.apache.pinot.common.metrics\"<type=\"ValidationMetrics\", name=\"pinot.controller.(\\w+)\\.(\\w+)\"><>(\\w+)"
   name: "pinot_controller_validateion_$2_$3"
   cache: true
@@ -183,6 +186,11 @@ rules:
     table: "$1"
 - pattern: "\"org.apache.pinot.common.metrics\"<type=\"BrokerMetrics\", name=\"pinot.broker.(\\w+)\\.queryRouting\"><>(\\w+)"
   name: "pinot_broker_queryRouting_$2"
+  cache: true
+  labels:
+    table: "$1"
+- pattern: "\"org.apache.pinot.common.metrics\"<type=\"BrokerMetrics\", name=\"pinot.broker.(\\w+)\\.queryTotalTimeMs\"><>(\\w+)"
+  name: "pinot_broker_queryTotalTimeMs_$2"
   cache: true
   labels:
     table: "$1"

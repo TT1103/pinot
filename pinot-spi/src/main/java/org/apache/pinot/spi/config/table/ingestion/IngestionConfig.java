@@ -18,8 +18,6 @@
  */
 package org.apache.pinot.spi.config.table.ingestion;
 
-import com.fasterxml.jackson.annotation.JsonCreator;
-import com.fasterxml.jackson.annotation.JsonProperty;
 import com.fasterxml.jackson.annotation.JsonPropertyDescription;
 import java.util.List;
 import javax.annotation.Nullable;
@@ -50,14 +48,20 @@ public class IngestionConfig extends BaseJsonConfig {
   @JsonPropertyDescription("Configs related to record aggregation function applied during ingestion")
   private List<AggregationConfig> _aggregationConfigs;
 
+  @JsonPropertyDescription("Configs related to skip any row which has error and continue during ingestion")
+  private boolean _continueOnError;
 
-  @JsonCreator
-  public IngestionConfig(@JsonProperty("batchIngestionConfig") @Nullable BatchIngestionConfig batchIngestionConfig,
-      @JsonProperty("streamIngestionConfig") @Nullable StreamIngestionConfig streamIngestionConfig,
-      @JsonProperty("filterConfig") @Nullable FilterConfig filterConfig,
-      @JsonProperty("transformConfigs") @Nullable List<TransformConfig> transformConfigs,
-      @JsonProperty("complexTypeConfig") @Nullable ComplexTypeConfig complexTypeConfig,
-      @JsonProperty("aggregationConfigs") @Nullable List<AggregationConfig> aggregationConfigs) {
+  @JsonPropertyDescription("Configs related to validate time value for each record during ingestion")
+  private boolean _rowTimeValueCheck = true;
+
+  @JsonPropertyDescription("Configs related to check time value for segment")
+  private boolean _segmentTimeValueCheck = true;
+
+  @Deprecated
+  public IngestionConfig(@Nullable BatchIngestionConfig batchIngestionConfig,
+      @Nullable StreamIngestionConfig streamIngestionConfig, @Nullable FilterConfig filterConfig,
+      @Nullable List<TransformConfig> transformConfigs, @Nullable ComplexTypeConfig complexTypeConfig,
+      @Nullable List<AggregationConfig> aggregationConfigs) {
     _batchIngestionConfig = batchIngestionConfig;
     _streamIngestionConfig = streamIngestionConfig;
     _filterConfig = filterConfig;
@@ -99,6 +103,18 @@ public class IngestionConfig extends BaseJsonConfig {
     return _aggregationConfigs;
   }
 
+  public boolean isContinueOnError() {
+    return _continueOnError;
+  }
+
+  public boolean isRowTimeValueCheck() {
+    return _rowTimeValueCheck;
+  }
+
+  public boolean isSegmentTimeValueCheck() {
+    return _segmentTimeValueCheck;
+  }
+
   public void setBatchIngestionConfig(BatchIngestionConfig batchIngestionConfig) {
     _batchIngestionConfig = batchIngestionConfig;
   }
@@ -121,5 +137,17 @@ public class IngestionConfig extends BaseJsonConfig {
 
   public void setAggregationConfigs(List<AggregationConfig> aggregationConfigs) {
     _aggregationConfigs = aggregationConfigs;
+  }
+
+  public void setContinueOnError(boolean continueOnError) {
+    _continueOnError = continueOnError;
+  }
+
+  public void setRowTimeValueCheck(boolean rowTimeValueCheck) {
+    _rowTimeValueCheck = rowTimeValueCheck;
+  }
+
+  public void setSegmentTimeValueCheck(boolean segmentTimeValueCheck) {
+    _segmentTimeValueCheck = segmentTimeValueCheck;
   }
 }

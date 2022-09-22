@@ -26,7 +26,7 @@
   <parent>
     <artifactId>prestodb-pinot-dependencies</artifactId>
     <groupId>org.apache.pinot</groupId>
-    <version>0.11.0-SNAPSHOT</version>
+    <version>0.12.0-SNAPSHOT</version>
     <relativePath>..</relativePath>
   </parent>
 
@@ -112,7 +112,23 @@
     </dependency>-->
     <dependency>
       <groupId>io.netty</groupId>
-      <artifactId>netty</artifactId>
+      <artifactId>netty-transport-native-epoll</artifactId>
+      <classifier>linux-x86_64</classifier>
+    </dependency>
+    <dependency>
+      <groupId>io.netty</groupId>
+      <artifactId>netty-transport-native-kqueue</artifactId>
+      <classifier>osx-x86_64</classifier>
+    </dependency>
+    <dependency>
+      <groupId>io.netty</groupId>
+      <artifactId>netty-tcnative-boringssl-static</artifactId>
+      <classifier>linux-x86_64</classifier>
+    </dependency>
+    <dependency>
+      <groupId>io.netty</groupId>
+      <artifactId>netty-tcnative-boringssl-static</artifactId>
+      <classifier>osx-x86_64</classifier>
     </dependency>
     <dependency>
       <groupId>io.netty</groupId>
@@ -264,11 +280,11 @@
                   <relocations>
                     <relocation>
                       <pattern>com.google.common.base</pattern>
-                      <shadedPattern>shaded.com.google.common.base</shadedPattern>
+                      <shadedPattern>${shade.prefix}.com.google.common.base</shadedPattern>
                     </relocation>
                     <relocation>
                       <pattern>org.apache.http</pattern>
-                      <shadedPattern>shaded.org.apache.http</shadedPattern>
+                      <shadedPattern>${shade.prefix}.org.apache.http</shadedPattern>
                     </relocation>
                   </relocations>
                 </configuration>

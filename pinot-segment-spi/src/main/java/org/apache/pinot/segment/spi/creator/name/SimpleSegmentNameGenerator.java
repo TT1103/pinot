@@ -19,6 +19,7 @@
 package org.apache.pinot.segment.spi.creator.name;
 
 import com.google.common.base.Preconditions;
+import java.util.UUID;
 import javax.annotation.Nullable;
 
 
@@ -38,25 +39,35 @@ import javax.annotation.Nullable;
 public class SimpleSegmentNameGenerator implements SegmentNameGenerator {
   private final String _segmentNamePrefix;
   private final String _segmentNamePostfix;
+  private final boolean _appendUUIDToSegmentName;
 
   public SimpleSegmentNameGenerator(String segmentNamePrefix, @Nullable String segmentNamePostfix) {
+    this(segmentNamePrefix, segmentNamePostfix, false);
+  }
+
+  public SimpleSegmentNameGenerator(String segmentNamePrefix, @Nullable String segmentNamePostfix,
+      boolean appendUUIDToSegmentName) {
     Preconditions.checkArgument(segmentNamePrefix != null, "Missing segmentNamePrefix for SimpleSegmentNameGenerator");
-    Preconditions.checkArgument(isValidSegmentName(segmentNamePrefix),
-        "Invalid segmentNamePrefix: %s for SimpleSegmentNameGenerator", segmentNamePrefix);
-    Preconditions.checkArgument(segmentNamePostfix == null || isValidSegmentName(segmentNamePostfix),
-        "Invalid segmentNamePostfix: %s for SimpleSegmentNameGenerator", segmentNamePostfix);
+    SegmentNameUtils.validatePartialOrFullSegmentName(segmentNamePrefix);
+    if (segmentNamePostfix != null) {
+      SegmentNameUtils.validatePartialOrFullSegmentName(segmentNamePostfix);
+    }
     _segmentNamePrefix = segmentNamePrefix;
     _segmentNamePostfix = segmentNamePostfix;
+    _appendUUIDToSegmentName = appendUUIDToSegmentName;
   }
 
   @Override
   public String generateSegmentName(int sequenceId, @Nullable Object minTimeValue, @Nullable Object maxTimeValue) {
-    Preconditions.checkArgument(minTimeValue == null || isValidSegmentName(minTimeValue.toString()),
-        "Invalid minTimeValue: %s for SimpleSegmentNameGenerator", minTimeValue);
-    Preconditions.checkArgument(maxTimeValue == null || isValidSegmentName(maxTimeValue.toString()),
-        "Invalid maxTimeValue: %s for SimpleSegmentNameGenerator", maxTimeValue);
-    return JOINER
-        .join(_segmentNamePrefix, minTimeValue, maxTimeValue, _segmentNamePostfix, sequenceId >= 0 ? sequenceId : null);
+    if (minTimeValue != null) {
+      SegmentNameUtils.validatePartialOrFullSegmentName(minTimeValue.toString());
+    }
+    if (maxTimeValue != null) {
+      SegmentNameUtils.validatePartialOrFullSegmentName(maxTimeValue.toString());
+    }
+
+    return JOINER.join(_segmentNamePrefix, minTimeValue, maxTimeValue, _segmentNamePostfix,
+        sequenceId >= 0 ? sequenceId : null, _appendUUIDToSegmentName ? UUID.randomUUID() : null);
   }
 
   @Override

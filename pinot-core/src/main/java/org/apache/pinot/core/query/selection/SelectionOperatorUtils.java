@@ -23,6 +23,7 @@ import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collection;
 import java.util.Collections;
+import java.util.Comparator;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.Iterator;
@@ -37,10 +38,12 @@ import org.apache.pinot.common.utils.DataSchema;
 import org.apache.pinot.common.utils.DataSchema.ColumnDataType;
 import org.apache.pinot.common.utils.DataTable;
 import org.apache.pinot.core.common.datatable.DataTableBuilder;
+import org.apache.pinot.core.common.datatable.DataTableFactory;
 import org.apache.pinot.core.query.request.context.QueryContext;
 import org.apache.pinot.segment.spi.IndexSegment;
 import org.apache.pinot.spi.utils.ArrayCopyUtils;
 import org.apache.pinot.spi.utils.ByteArray;
+import org.roaringbitmap.RoaringBitmap;
 
 
 /**
@@ -226,15 +229,38 @@ public class SelectionOperatorUtils {
    *
    * @param rows {@link Collection} of selection rows.
    * @param dataSchema data schema.
+   * @param nullHandlingEnabled whether null handling is enabled.
    * @return data table.
    * @throws Exception
    */
-  public static DataTable getDataTableFromRows(Collection<Object[]> rows, DataSchema dataSchema)
+  public static DataTable getDataTableFromRows(Collection<Object[]> rows, DataSchema dataSchema,
+      boolean nullHandlingEnabled)
       throws Exception {
     ColumnDataType[] storedColumnDataTypes = dataSchema.getStoredColumnDataTypes();
     int numColumns = storedColumnDataTypes.length;
 
-    DataTableBuilder dataTableBuilder = new DataTableBuilder(dataSchema);
+    DataTableBuilder dataTableBuilder = DataTableFactory.getDataTableBuilder(dataSchema);
+    RoaringBitmap[] nullBitmaps = null;
+    if (nullHandlingEnabled) {
+      nullBitmaps = new RoaringBitmap[numColumns];
+      Object[] nullPlaceholders = new Object[numColumns];
+      for (int colId = 0; colId < numColumns; colId++) {
+        nullBitmaps[colId] = new RoaringBitmap();
+        nullPlaceholders[colId] = storedColumnDataTypes[colId].getNullPlaceholder();
+      }
+      int rowId = 0;
+      for (Object[] row : rows) {
+        for (int i = 0; i < numColumns; i++) {
+          Object columnValue = row[i];
+          if (columnValue == null) {
+            row[i] = nullPlaceholders[i];
+            nullBitmaps[i].add(rowId);
+          }
+        }
+        rowId++;
+      }
+    }
+
     for (Object[] row : rows) {
       dataTableBuilder.startRow();
       for (int i = 0; i < numColumns; i++) {
@@ -319,6 +345,11 @@ public class SelectionOperatorUtils {
       dataTableBuilder.finishRow();
     }
 
+    if (nullHandlingEnabled) {
+      for (int colId = 0; colId < numColumns; colId++) {
+        dataTableBuilder.setNullRowIds(nullBitmaps[colId]);
+      }
+    }
     return dataTableBuilder.build();
   }
 
@@ -391,15 +422,37 @@ public class SelectionOperatorUtils {
    * Reduces a collection of {@link DataTable}s to selection rows for selection queries without <code>ORDER BY</code>.
    * (Broker side)
    */
-  public static List<Object[]> reduceWithoutOrdering(Collection<DataTable> dataTables, int limit) {
+  public static List<Object[]> reduceWithoutOrdering(Collection<DataTable> dataTables, int limit,
+      boolean nullHandlingEnabled) {
     List<Object[]> rows = new ArrayList<>(Math.min(limit, SelectionOperatorUtils.MAX_ROW_HOLDER_INITIAL_CAPACITY));
     for (DataTable dataTable : dataTables) {
+      int numColumns = dataTable.getDataSchema().size();
       int numRows = dataTable.getNumberOfRows();
-      for (int rowId = 0; rowId < numRows; rowId++) {
-        if (rows.size() < limit) {
-          rows.add(extractRowFromDataTable(dataTable, rowId));
-        } else {
-          return rows;
+      if (nullHandlingEnabled) {
+        RoaringBitmap[] nullBitmaps = new RoaringBitmap[numColumns];
+        for (int coldId = 0; coldId < numColumns; coldId++) {
+          nullBitmaps[coldId] = dataTable.getNullRowIds(coldId);
+        }
+        for (int rowId = 0; rowId < numRows; rowId++) {
+          if (rows.size() < limit) {
+            Object[] row = extractRowFromDataTable(dataTable, rowId);
+            for (int colId = 0; colId < numColumns; colId++) {
+              if (nullBitmaps[colId] != null && nullBitmaps[colId].contains(rowId)) {
+                row[colId] = null;
+              }
+            }
+            rows.add(row);
+          } else {
+            break;
+          }
+        }
+      } else {
+        for (int rowId = 0; rowId < numRows; rowId++) {
+          if (rows.size() < limit) {
+            rows.add(extractRowFromDataTable(dataTable, rowId));
+          } else {
+            break;
+          }
         }
       }
     }
@@ -448,7 +501,10 @@ public class SelectionOperatorUtils {
       Object[] resultRow = new Object[numColumns];
       for (int i = 0; i < numColumns; i++) {
         int index = (columnNameToIndexMap != null) ? columnNameToIndexMap.get(selectionColumns.get(i)) : i;
-        resultRow[i] = resultColumnDataTypes[i].convertAndFormat(row[index]);
+        Object value = row[index];
+        if (value != null) {
+          resultRow[i] = resultColumnDataTypes[i].convertAndFormat(value);
+        }
       }
       resultRows.add(resultRow);
     }
@@ -480,6 +536,86 @@ public class SelectionOperatorUtils {
       columnToIndexMap.put(columns[i], i);
     }
     return columnToIndexMap;
+  }
+
+  /**
+   * Helper method to get the type-compatible {@link Comparator} for selection rows. (Inter segment)
+   * <p>Type-compatible comparator allows compatible types to compare with each other.
+   *
+   * @return flexible {@link Comparator} for selection rows.
+   */
+  public static Comparator<Object[]> getTypeCompatibleComparator(List<OrderByExpressionContext> orderByExpressions,
+      DataSchema dataSchema, boolean isNullHandlingEnabled) {
+    ColumnDataType[] columnDataTypes = dataSchema.getColumnDataTypes();
+
+    // Compare all single-value columns
+    int numOrderByExpressions = orderByExpressions.size();
+    List<Integer> valueIndexList = new ArrayList<>(numOrderByExpressions);
+    for (int i = 0; i < numOrderByExpressions; i++) {
+      if (!columnDataTypes[i].isArray()) {
+        valueIndexList.add(i);
+      }
+    }
+
+    int numValuesToCompare = valueIndexList.size();
+    int[] valueIndices = new int[numValuesToCompare];
+    boolean[] useDoubleComparison = new boolean[numValuesToCompare];
+    // Use multiplier -1 or 1 to control ascending/descending order
+    int[] multipliers = new int[numValuesToCompare];
+    for (int i = 0; i < numValuesToCompare; i++) {
+      int valueIndex = valueIndexList.get(i);
+      valueIndices[i] = valueIndex;
+      if (columnDataTypes[valueIndex].isNumber()) {
+        useDoubleComparison[i] = true;
+      }
+      multipliers[i] = orderByExpressions.get(valueIndex).isAsc() ? -1 : 1;
+    }
+
+    if (isNullHandlingEnabled) {
+      return (o1, o2) -> {
+        for (int i = 0; i < numValuesToCompare; i++) {
+          int index = valueIndices[i];
+          Object v1 = o1[index];
+          Object v2 = o2[index];
+          if (v1 == null) {
+            // The default null ordering is: 'NULLS LAST'.
+            return v2 == null ? 0 : -multipliers[i];
+          } else if (v2 == null) {
+            return multipliers[i];
+          }
+          int result;
+          if (useDoubleComparison[i]) {
+            result = Double.compare(((Number) v1).doubleValue(), ((Number) v2).doubleValue());
+          } else {
+            //noinspection unchecked
+            result = ((Comparable) v1).compareTo(v2);
+          }
+          if (result != 0) {
+            return result * multipliers[i];
+          }
+        }
+        return 0;
+      };
+    } else {
+      return (o1, o2) -> {
+        for (int i = 0; i < numValuesToCompare; i++) {
+          int index = valueIndices[i];
+          Object v1 = o1[index];
+          Object v2 = o2[index];
+          int result;
+          if (useDoubleComparison[i]) {
+            result = Double.compare(((Number) v1).doubleValue(), ((Number) v2).doubleValue());
+          } else {
+            //noinspection unchecked
+            result = ((Comparable) v1).compareTo(v2);
+          }
+          if (result != 0) {
+            return result * multipliers[i];
+          }
+        }
+        return 0;
+      };
+    }
   }
 
   /**

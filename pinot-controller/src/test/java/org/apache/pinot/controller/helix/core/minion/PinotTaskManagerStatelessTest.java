@@ -41,6 +41,8 @@ import org.quartz.Scheduler;
 import org.quartz.SchedulerException;
 import org.quartz.Trigger;
 import org.quartz.impl.matchers.GroupMatcher;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.testng.annotations.AfterClass;
 import org.testng.annotations.BeforeClass;
 import org.testng.annotations.Test;
@@ -53,6 +55,7 @@ public class PinotTaskManagerStatelessTest extends ControllerTest {
   private static final String RAW_TABLE_NAME = "myTable";
   private static final String OFFLINE_TABLE_NAME = TableNameBuilder.OFFLINE.tableNameWithType(RAW_TABLE_NAME);
   private static final long TIMEOUT_IN_MS = 10_000L;
+  private static final Logger LOGGER = LoggerFactory.getLogger(PinotTaskManagerStatelessTest.class);
 
   @BeforeClass
   public void setUp()
@@ -66,6 +69,41 @@ public class PinotTaskManagerStatelessTest extends ControllerTest {
     startController();
     PinotTaskManager taskManager = _controllerStarter.getTaskManager();
     assertNull(taskManager.getScheduler());
+    stopController();
+  }
+
+  @Test
+  public void testSkipLateCronSchedule()
+      throws Exception {
+    Map<String, Object> properties = getDefaultControllerConfiguration();
+    properties.put(ControllerConf.ControllerPeriodicTasksConf.PINOT_TASK_MANAGER_SCHEDULER_ENABLED, true);
+    properties.put(ControllerConf.ControllerPeriodicTasksConf.TASK_MANAGER_SKIP_LATE_CRON_SCHEDULE, "true");
+    properties.put(ControllerConf.ControllerPeriodicTasksConf.TASK_MANAGER_MAX_CRON_SCHEDULE_DELAY_IN_SECONDS, "10");
+    startController(properties);
+    addFakeBrokerInstancesToAutoJoinHelixCluster(1, true);
+    addFakeServerInstancesToAutoJoinHelixCluster(1, true);
+    Schema schema = new Schema.SchemaBuilder().setSchemaName(RAW_TABLE_NAME)
+        .addSingleValueDimension("myMap", FieldSpec.DataType.STRING)
+        .addSingleValueDimension("myMapStr", FieldSpec.DataType.STRING)
+        .addSingleValueDimension("complexMapStr", FieldSpec.DataType.STRING).build();
+    addSchema(schema);
+    PinotTaskManager taskManager = _controllerStarter.getTaskManager();
+    Scheduler scheduler = taskManager.getScheduler();
+    assertNotNull(scheduler);
+
+    // Add Table with one task.
+    TableConfig tableConfig = new TableConfigBuilder(TableType.OFFLINE).setTableName(RAW_TABLE_NAME).setTaskConfig(
+        new TableTaskConfig(
+            ImmutableMap.of("SegmentGenerationAndPushTask", ImmutableMap.of("schedule", "0 * * ? * * *")))).build();
+    addTableConfig(tableConfig);
+    waitForJobGroupNames(_controllerStarter.getTaskManager(),
+        jgn -> jgn.size() == 1 && jgn.contains(MinionConstants.SegmentGenerationAndPushTask.TASK_TYPE),
+        "JobGroupNames should have SegmentGenerationAndPushTask only");
+    validateJob(MinionConstants.SegmentGenerationAndPushTask.TASK_TYPE, "0 */10 * ? * * *", true, 10);
+
+    dropOfflineTable(RAW_TABLE_NAME);
+    waitForJobGroupNames(_controllerStarter.getTaskManager(), List::isEmpty, "JobGroupNames should be empty");
+    stopFakeInstances();
     stopController();
   }
 
@@ -216,6 +254,11 @@ public class PinotTaskManagerStatelessTest extends ControllerTest {
 
   private void validateJob(String taskType, String cronExpression)
       throws Exception {
+    validateJob(taskType, cronExpression, false, 600);
+  }
+
+  private void validateJob(String taskType, String cronExpression, boolean skipLateCronSchedule, int maxDelayInSeconds)
+      throws Exception {
     PinotTaskManager taskManager = _controllerStarter.getTaskManager();
     Scheduler scheduler = taskManager.getScheduler();
     assert scheduler != null;
@@ -228,6 +271,8 @@ public class PinotTaskManagerStatelessTest extends ControllerTest {
     assertEquals(jobDetail.getKey().getGroup(), taskType);
     assertSame(jobDetail.getJobDataMap().get("PinotTaskManager"), taskManager);
     assertSame(jobDetail.getJobDataMap().get("LeadControllerManager"), _controllerStarter.getLeadControllerManager());
+    assertEquals(jobDetail.getJobDataMap().get("SkipLateCronSchedule"), skipLateCronSchedule);
+    assertEquals(jobDetail.getJobDataMap().get("MaxCronScheduleDelayInSeconds"), maxDelayInSeconds);
     // jobDetail and jobTrigger are not added atomically by the scheduler,
     // the jobDetail is added to an internal map firstly, and jobTrigger
     // is added to another internal map afterwards, so we check for the existence
@@ -239,10 +284,22 @@ public class PinotTaskManagerStatelessTest extends ControllerTest {
         throw new RuntimeException(e);
       }
     }, TIMEOUT_IN_MS, "JobDetail exiting but missing JobTrigger");
-    List<? extends Trigger> triggersOfJob = scheduler.getTriggersOfJob(jobKey);
-    Trigger trigger = triggersOfJob.iterator().next();
-    assertTrue(trigger instanceof CronTrigger);
-    assertEquals(((CronTrigger) trigger).getCronExpression(), cronExpression);
+
+    // There is no guarantee that previous changes have been applied, therefore we need to
+    // retry the check for a bit
+    TestUtils.waitForCondition(aVoid -> {
+      try {
+        List<? extends Trigger> triggersOfJob = scheduler.getTriggersOfJob(jobKey);
+        Trigger trigger = triggersOfJob.iterator().next();
+        assertTrue(trigger instanceof CronTrigger);
+        assertEquals(((CronTrigger) trigger).getCronExpression(), cronExpression);
+      } catch (SchedulerException ex) {
+        throw new RuntimeException(ex);
+      } catch (AssertionError assertionError) {
+        LOGGER.warn("Unexpected cron expression. Hasn't been replicated yet?", assertionError);
+      }
+      return true;
+    }, TIMEOUT_IN_MS, 500L, "Cron expression didn't change to " + cronExpression);
   }
 
   @AfterClass

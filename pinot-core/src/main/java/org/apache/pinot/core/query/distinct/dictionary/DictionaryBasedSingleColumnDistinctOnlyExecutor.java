@@ -33,18 +33,30 @@ public class DictionaryBasedSingleColumnDistinctOnlyExecutor extends BaseDiction
 
   public DictionaryBasedSingleColumnDistinctOnlyExecutor(ExpressionContext expression, Dictionary dictionary,
       DataType dataType, int limit) {
-    super(expression, dictionary, dataType, limit);
+    super(expression, dictionary, dataType, limit, false);
   }
 
   @Override
   public boolean process(TransformBlock transformBlock) {
     BlockValSet blockValueSet = transformBlock.getBlockValueSet(_expression);
-    int[] dictIds = blockValueSet.getDictionaryIdsSV();
     int numDocs = transformBlock.getNumDocs();
-    for (int i = 0; i < numDocs; i++) {
-      _dictIdSet.add(dictIds[i]);
-      if (_dictIdSet.size() >= _limit) {
-        return true;
+    if (blockValueSet.isSingleValue()) {
+      int[] dictIds = blockValueSet.getDictionaryIdsSV();
+      for (int i = 0; i < numDocs; i++) {
+        _dictIdSet.add(dictIds[i]);
+        if (_dictIdSet.size() >= _limit) {
+          return true;
+        }
+      }
+    } else {
+      int[][] dictIds = blockValueSet.getDictionaryIdsMV();
+      for (int i = 0; i < numDocs; i++) {
+        for (int dictId : dictIds[i]) {
+          _dictIdSet.add(dictId);
+          if (_dictIdSet.size() >= _limit) {
+            return true;
+          }
+        }
       }
     }
     return false;

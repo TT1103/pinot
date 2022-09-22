@@ -30,10 +30,10 @@ import java.util.concurrent.TimeUnit;
 import javax.annotation.Nullable;
 import org.apache.commons.lang3.StringUtils;
 import org.apache.helix.AccessOption;
-import org.apache.helix.ZNRecord;
 import org.apache.helix.model.ExternalView;
 import org.apache.helix.model.IdealState;
 import org.apache.helix.store.zk.ZkHelixPropertyStore;
+import org.apache.helix.zookeeper.datamodel.ZNRecord;
 import org.apache.pinot.broker.routing.segmentpruner.interval.Interval;
 import org.apache.pinot.broker.routing.segmentpruner.interval.IntervalTree;
 import org.apache.pinot.common.metadata.ZKMetadataProvider;
@@ -85,7 +85,7 @@ public class TimeSegmentPruner implements SegmentPruner {
     DateTimeFieldSpec dateTimeSpec = schema.getSpecForTimeColumn(_timeColumn);
     Preconditions.checkNotNull(dateTimeSpec, "Field spec must be specified in schema for time column: %s of table: %s",
         _timeColumn, _tableNameWithType);
-    _timeFormatSpec = new DateTimeFormatSpec(dateTimeSpec.getFormat());
+    _timeFormatSpec = dateTimeSpec.getFormatSpec();
   }
 
   @Override

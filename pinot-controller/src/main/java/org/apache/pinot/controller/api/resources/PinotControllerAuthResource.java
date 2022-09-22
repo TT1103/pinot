@@ -19,10 +19,14 @@
 package org.apache.pinot.controller.api.resources;
 
 import io.swagger.annotations.Api;
+import io.swagger.annotations.ApiKeyAuthDefinition;
 import io.swagger.annotations.ApiOperation;
 import io.swagger.annotations.ApiParam;
 import io.swagger.annotations.ApiResponse;
 import io.swagger.annotations.ApiResponses;
+import io.swagger.annotations.Authorization;
+import io.swagger.annotations.SecurityDefinition;
+import io.swagger.annotations.SwaggerDefinition;
 import javax.inject.Inject;
 import javax.ws.rs.GET;
 import javax.ws.rs.Path;
@@ -31,13 +35,16 @@ import javax.ws.rs.QueryParam;
 import javax.ws.rs.core.Context;
 import javax.ws.rs.core.HttpHeaders;
 import javax.ws.rs.core.MediaType;
-import org.apache.commons.lang3.StringUtils;
 import org.apache.pinot.controller.api.access.AccessControl;
 import org.apache.pinot.controller.api.access.AccessControlFactory;
 import org.apache.pinot.controller.api.access.AccessType;
 
+import static org.apache.pinot.spi.utils.CommonConstants.SWAGGER_AUTHORIZATION_KEY;
 
-@Api(tags = "Auth")
+
+@Api(tags = "Auth", authorizations = {@Authorization(value = SWAGGER_AUTHORIZATION_KEY)})
+@SwaggerDefinition(securityDefinition = @SecurityDefinition(apiKeyAuthDefinitions = @ApiKeyAuthDefinition(name =
+    HttpHeaders.AUTHORIZATION, in = ApiKeyAuthDefinition.ApiKeyLocation.HEADER, key = SWAGGER_AUTHORIZATION_KEY)))
 @Path("/")
 public class PinotControllerAuthResource {
 
@@ -68,11 +75,6 @@ public class PinotControllerAuthResource {
       @ApiParam(value = "API access type") @QueryParam("accessType") AccessType accessType,
       @ApiParam(value = "Endpoint URL") @QueryParam("endpointUrl") String endpointUrl) {
     AccessControl accessControl = _accessControlFactory.create();
-
-    if (StringUtils.isBlank(tableName)) {
-      return accessControl.hasAccess(accessType, _httpHeaders, endpointUrl);
-    }
-
     return accessControl.hasAccess(tableName, accessType, _httpHeaders, endpointUrl);
   }
 

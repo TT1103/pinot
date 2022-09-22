@@ -26,6 +26,7 @@ import org.apache.pinot.core.common.BlockValSet;
 import org.apache.pinot.core.operator.blocks.TransformBlock;
 import org.apache.pinot.core.query.distinct.DistinctExecutor;
 import org.apache.pinot.spi.data.FieldSpec.DataType;
+import org.roaringbitmap.RoaringBitmap;
 
 
 /**
@@ -35,8 +36,8 @@ public class RawDoubleSingleColumnDistinctOrderByExecutor extends BaseRawDoubleS
   private final DoublePriorityQueue _priorityQueue;
 
   public RawDoubleSingleColumnDistinctOrderByExecutor(ExpressionContext expression, DataType dataType,
-      OrderByExpressionContext orderByExpression, int limit) {
-    super(expression, dataType, limit);
+      OrderByExpressionContext orderByExpression, int limit, boolean nullHandlingEnabled) {
+    super(expression, dataType, limit, nullHandlingEnabled);
 
     assert orderByExpression.getExpression().equals(expression);
     int comparisonFactor = orderByExpression.isAsc() ? -1 : 1;
@@ -47,25 +48,48 @@ public class RawDoubleSingleColumnDistinctOrderByExecutor extends BaseRawDoubleS
   @Override
   public boolean process(TransformBlock transformBlock) {
     BlockValSet blockValueSet = transformBlock.getBlockValueSet(_expression);
-    double[] values = blockValueSet.getDoubleValuesSV();
     int numDocs = transformBlock.getNumDocs();
-    for (int i = 0; i < numDocs; i++) {
-      double value = values[i];
-      if (!_valueSet.contains(value)) {
-        if (_valueSet.size() < _limit) {
-          _valueSet.add(value);
-          _priorityQueue.enqueue(value);
-        } else {
-          double firstValue = _priorityQueue.firstDouble();
-          if (_priorityQueue.comparator().compare(value, firstValue) > 0) {
-            _valueSet.remove(firstValue);
-            _valueSet.add(value);
-            _priorityQueue.dequeueDouble();
-            _priorityQueue.enqueue(value);
+    if (blockValueSet.isSingleValue()) {
+      double[] values = blockValueSet.getDoubleValuesSV();
+      if (_nullHandlingEnabled) {
+        RoaringBitmap nullBitmap = blockValueSet.getNullBitmap();
+        for (int i = 0; i < numDocs; i++) {
+          if (nullBitmap != null && nullBitmap.contains(i)) {
+            _hasNull = true;
+          } else {
+            add(values[i]);
           }
+        }
+      } else {
+        for (int i = 0; i < numDocs; i++) {
+          add(values[i]);
+        }
+      }
+    } else {
+      double[][] values = blockValueSet.getDoubleValuesMV();
+      for (int i = 0; i < numDocs; i++) {
+        for (double value : values[i]) {
+          add(value);
         }
       }
     }
     return false;
+  }
+
+  private void add(double value) {
+    if (!_valueSet.contains(value)) {
+      if (_valueSet.size() < _limit - (_hasNull ? 1 : 0)) {
+        _valueSet.add(value);
+        _priorityQueue.enqueue(value);
+      } else {
+        double firstValue = _priorityQueue.firstDouble();
+        if (_priorityQueue.comparator().compare(value, firstValue) > 0) {
+          _valueSet.remove(firstValue);
+          _valueSet.add(value);
+          _priorityQueue.dequeueDouble();
+          _priorityQueue.enqueue(value);
+        }
+      }
+    }
   }
 }

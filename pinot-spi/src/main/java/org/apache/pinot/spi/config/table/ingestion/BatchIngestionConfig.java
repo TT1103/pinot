@@ -33,7 +33,7 @@ import org.apache.pinot.spi.config.BaseJsonConfig;
 public class BatchIngestionConfig extends BaseJsonConfig {
 
   @JsonPropertyDescription("Configs for all the batch sources to ingest from")
-  private final List<Map<String, String>> _batchConfigMaps;
+  private List<Map<String, String>> _batchConfigMaps;
 
   @JsonPropertyDescription("Ingestion type APPEND or REFRESH")
   private String _segmentIngestionType;
@@ -41,13 +41,24 @@ public class BatchIngestionConfig extends BaseJsonConfig {
   @JsonPropertyDescription("Ingestion frequency HOURLY or DAILY")
   private String _segmentIngestionFrequency;
 
+  @JsonPropertyDescription("True to enable consistent data push")
+  private boolean _consistentDataPush;
+
   @JsonCreator
   public BatchIngestionConfig(@JsonProperty("batchConfigMaps") @Nullable List<Map<String, String>> batchConfigMaps,
       @JsonProperty("segmentIngestionType") String segmentIngestionType,
-      @JsonProperty("segmentIngestionFrequency") String segmentIngestionFrequency) {
+      @JsonProperty("segmentIngestionFrequency") String segmentIngestionFrequency,
+      @JsonProperty("consistentDataPush") boolean consistentDataPush) {
     _batchConfigMaps = batchConfigMaps;
     _segmentIngestionType = segmentIngestionType;
     _segmentIngestionFrequency = segmentIngestionFrequency;
+    _consistentDataPush = consistentDataPush;
+  }
+
+  public BatchIngestionConfig(@JsonProperty("batchConfigMaps") @Nullable List<Map<String, String>> batchConfigMaps,
+      @JsonProperty("segmentIngestionType") String segmentIngestionType,
+      @JsonProperty("segmentIngestionFrequency") String segmentIngestionFrequency) {
+    this(batchConfigMaps, segmentIngestionType, segmentIngestionFrequency, false);
   }
 
   @Nullable
@@ -63,11 +74,23 @@ public class BatchIngestionConfig extends BaseJsonConfig {
     return _segmentIngestionFrequency;
   }
 
+  public boolean getConsistentDataPush() {
+    return _consistentDataPush;
+  }
+
+  public void setBatchConfigMaps(List<Map<String, String>> batchConfigMaps) {
+    _batchConfigMaps = batchConfigMaps;
+  }
+
   public void setSegmentIngestionType(String segmentIngestionType) {
     _segmentIngestionType = segmentIngestionType;
   }
 
   public void setSegmentIngestionFrequency(String segmentIngestionFrequency) {
     _segmentIngestionFrequency = segmentIngestionFrequency;
+  }
+
+  public void setConsistentDataPush(boolean consistentDataPush) {
+    _consistentDataPush = consistentDataPush;
   }
 }

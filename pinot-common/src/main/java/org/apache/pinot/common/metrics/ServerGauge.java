@@ -40,7 +40,10 @@ public enum ServerGauge implements AbstractMetrics.Gauge {
   LLC_SIMULTANEOUS_SEGMENT_BUILDS("llcSimultaneousSegmentBuilds", true),
   RESIZE_TIME_MS("milliseconds", false),
   // Upsert metrics
-  UPSERT_PRIMARY_KEYS_COUNT("upsertPrimaryKeysCount", false);
+  UPSERT_PRIMARY_KEYS_COUNT("upsertPrimaryKeysCount", false),
+  // Dedup metrics
+  DEDUP_PRIMARY_KEYS_COUNT("dedupPrimaryKeysCount", false),
+  CONSUMPTION_QUOTA_UTILIZATION("ratio", false);
 
   private final String _gaugeName;
   private final String _unit;

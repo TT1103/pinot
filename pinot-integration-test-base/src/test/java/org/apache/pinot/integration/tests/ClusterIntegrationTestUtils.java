@@ -69,6 +69,7 @@ import org.apache.pinot.segment.local.segment.creator.impl.SegmentIndexCreationD
 import org.apache.pinot.segment.spi.creator.SegmentGeneratorConfig;
 import org.apache.pinot.segment.spi.creator.SegmentIndexCreationDriver;
 import org.apache.pinot.spi.config.table.TableConfig;
+import org.apache.pinot.spi.data.FieldSpec;
 import org.apache.pinot.spi.stream.StreamDataProducer;
 import org.apache.pinot.spi.stream.StreamDataProvider;
 import org.apache.pinot.spi.utils.JsonUtils;
@@ -175,7 +176,7 @@ public class ClusterIntegrationTestUtils {
                 if (i < array.size()) {
                   value = array.get(i);
                   if (value instanceof Utf8) {
-                    value = value.toString();
+                    value = StringUtil.sanitizeStringValue(value.toString(), FieldSpec.DEFAULT_MAX_LENGTH);
                   }
                 } else {
                   value = null;
@@ -184,7 +185,7 @@ public class ClusterIntegrationTestUtils {
               }
             } else {
               if (value instanceof Utf8) {
-                value = value.toString();
+                value = StringUtil.sanitizeStringValue(value.toString(), FieldSpec.DEFAULT_MAX_LENGTH);
               }
               h2Statement.setObject(h2Index++, value);
             }
@@ -283,12 +284,28 @@ public class ClusterIntegrationTestUtils {
   public static void buildSegmentFromAvro(File avroFile, TableConfig tableConfig,
       org.apache.pinot.spi.data.Schema schema, int segmentIndex, File segmentDir, File tarDir)
       throws Exception {
+    // Test segment with space and special character in the file name
+    buildSegmentFromAvro(avroFile, tableConfig, schema, segmentIndex + " %", segmentDir, tarDir);
+  }
+
+  /**
+   * Builds one Pinot segment from the given Avro file.
+   *
+   * @param avroFile Avro file
+   * @param tableConfig Pinot table config
+   * @param schema Pinot schema
+   * @param segmentNamePostfix Segment name postfix
+   * @param segmentDir Output directory for the un-tarred segments
+   * @param tarDir Output directory for the tarred segments
+   */
+  public static void buildSegmentFromAvro(File avroFile, TableConfig tableConfig,
+      org.apache.pinot.spi.data.Schema schema, String segmentNamePostfix, File segmentDir, File tarDir)
+      throws Exception {
     SegmentGeneratorConfig segmentGeneratorConfig = new SegmentGeneratorConfig(tableConfig, schema);
     segmentGeneratorConfig.setInputFilePath(avroFile.getPath());
     segmentGeneratorConfig.setOutDir(segmentDir.getPath());
     segmentGeneratorConfig.setTableName(tableConfig.getTableName());
-    // Test segment with space and special character in the file name
-    segmentGeneratorConfig.setSegmentNamePostfix(segmentIndex + " %");
+    segmentGeneratorConfig.setSegmentNamePostfix(segmentNamePostfix);
 
     // Build the segment
     SegmentIndexCreationDriver driver = new SegmentIndexCreationDriverImpl();
@@ -539,8 +556,15 @@ public class ClusterIntegrationTestUtils {
   static void testQuery(String pinotQuery, String brokerUrl, org.apache.pinot.client.Connection pinotConnection,
       String h2Query, Connection h2Connection, @Nullable Map<String, String> headers)
       throws Exception {
+    testQuery(pinotQuery, brokerUrl, pinotConnection, h2Query, h2Connection, headers, null);
+  }
+
+  static void testQuery(String pinotQuery, String brokerUrl, org.apache.pinot.client.Connection pinotConnection,
+      String h2Query, Connection h2Connection, @Nullable Map<String, String> headers,
+      @Nullable Map<String, String> extraJsonProperties)
+      throws Exception {
     // broker response
-    JsonNode pinotResponse = ClusterTest.postQuery(pinotQuery, brokerUrl, headers);
+    JsonNode pinotResponse = ClusterTest.postQuery(pinotQuery, brokerUrl, headers, extraJsonProperties);
     if (!pinotResponse.get("exceptions").isEmpty()) {
       throw new RuntimeException("Got Exceptions from Query Response: " + pinotResponse);
     }
@@ -622,7 +646,7 @@ public class ClusterIntegrationTestUtils {
             return;
           }
           if (h2ResultSet.first()) {
-            for (int i = 0; i < brokerResponseRows.size(); i++) {
+            for (int i = 0; i < numRows; i++) {
               for (int c = 0; c < numColumns; c++) {
                 String h2Value = h2ResultSet.getString(c + 1);
                 String brokerValue = brokerResponseRows.get(i).get(c).asText();

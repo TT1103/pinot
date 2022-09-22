@@ -39,6 +39,7 @@ public class Constants {
   public static final String VERSION_TAG = "Version";
   public static final String HEALTH_TAG = "Health";
   public static final String INSTANCE_TAG = "Instance";
+  public static final String QUERY_TAG = "Query";
   public static final String SCHEMA_TAG = "Schema";
   public static final String TENANT_TAG = "Tenant";
   public static final String BROKER_TAG = "Broker";
@@ -50,6 +51,8 @@ public class Constants {
   public static final String APP_CONFIGS = "AppConfigs";
   public static final String PERIODIC_TASK_TAG = "PeriodicTask";
   public static final String UPSERT_RESOURCE_TAG = "Upsert";
+
+  public static final String REALTIME_SEGMENT_VALIDATION_MANAGER = "RealtimeSegmentValidationManager";
 
   public static TableType validateTableType(String tableTypeStr) {
     if (StringUtils.isBlank(tableTypeStr)) {

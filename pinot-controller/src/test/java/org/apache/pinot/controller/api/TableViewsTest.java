@@ -18,12 +18,13 @@
  */
 package org.apache.pinot.controller.api;
 
+import java.io.IOException;
 import java.net.HttpURLConnection;
 import java.net.URL;
 import java.util.Map;
 import org.apache.helix.InstanceType;
-import org.apache.pinot.controller.ControllerTestUtils;
 import org.apache.pinot.controller.api.resources.TableViews;
+import org.apache.pinot.controller.helix.ControllerTest;
 import org.apache.pinot.controller.utils.SegmentMetadataMockUtils;
 import org.apache.pinot.core.realtime.impl.fakestream.FakeStreamConfigUtils;
 import org.apache.pinot.spi.config.table.TableConfig;
@@ -41,6 +42,7 @@ import org.testng.annotations.Test;
 
 
 public class TableViewsTest {
+  private static final ControllerTest TEST_INSTANCE = ControllerTest.getInstance();
   private static final String OFFLINE_TABLE_NAME = "offlineTable";
   private static final String OFFLINE_SEGMENT_NAME = "offlineSegment";
   private static final String HYBRID_TABLE_NAME = "viewsTable";
@@ -48,35 +50,41 @@ public class TableViewsTest {
   @BeforeClass
   public void setUp()
       throws Exception {
-    ControllerTestUtils.setupClusterAndValidate();
+    TEST_INSTANCE.setupSharedStateAndValidate();
 
     // Create the offline table and add one segment
     TableConfig tableConfig =
         new TableConfigBuilder(TableType.OFFLINE).setTableName(OFFLINE_TABLE_NAME).setNumReplicas(2).build();
-    Assert.assertEquals(ControllerTestUtils.getHelixManager().getInstanceType(), InstanceType.CONTROLLER);
-    ControllerTestUtils.getHelixResourceManager().addTable(tableConfig);
-    ControllerTestUtils.getHelixResourceManager()
+    Assert.assertEquals(TEST_INSTANCE.getHelixManager().getInstanceType(), InstanceType.CONTROLLER);
+    TEST_INSTANCE.getHelixResourceManager().addTable(tableConfig);
+    TEST_INSTANCE.getHelixResourceManager()
         .addNewSegment(TableNameBuilder.OFFLINE.tableNameWithType(OFFLINE_TABLE_NAME),
             SegmentMetadataMockUtils.mockSegmentMetadata(OFFLINE_TABLE_NAME, OFFLINE_SEGMENT_NAME), "downloadUrl");
 
     // Create the hybrid table
     tableConfig = new TableConfigBuilder(TableType.OFFLINE).setTableName(HYBRID_TABLE_NAME)
-        .setNumReplicas(ControllerTestUtils.MIN_NUM_REPLICAS).build();
-    ControllerTestUtils.getHelixResourceManager().addTable(tableConfig);
+        .setNumReplicas(TEST_INSTANCE.MIN_NUM_REPLICAS).build();
+    TEST_INSTANCE.getHelixResourceManager().addTable(tableConfig);
 
     // add schema for realtime table
-    ControllerTestUtils.addDummySchema(HYBRID_TABLE_NAME);
+    TEST_INSTANCE.addDummySchema(HYBRID_TABLE_NAME);
     StreamConfig streamConfig = FakeStreamConfigUtils.getDefaultHighLevelStreamConfigs();
     tableConfig = new TableConfigBuilder(TableType.REALTIME).setTableName(HYBRID_TABLE_NAME)
-        .setNumReplicas(ControllerTestUtils.MIN_NUM_REPLICAS).setStreamConfigs(streamConfig.getStreamConfigsMap())
+        .setNumReplicas(TEST_INSTANCE.MIN_NUM_REPLICAS).setStreamConfigs(streamConfig.getStreamConfigsMap())
         .build();
-    ControllerTestUtils.getHelixResourceManager().addTable(tableConfig);
+    TEST_INSTANCE.getHelixResourceManager().addTable(tableConfig);
 
     // Wait for external view get updated
     long endTime = System.currentTimeMillis() + 10_000L;
     while (System.currentTimeMillis() < endTime) {
       Thread.sleep(100L);
-      TableViews.TableView tableView = getTableView(OFFLINE_TABLE_NAME, TableViews.EXTERNALVIEW, null);
+      TableViews.TableView tableView;
+      try {
+        tableView = getTableView(OFFLINE_TABLE_NAME, TableViews.EXTERNALVIEW, null);
+      } catch (IOException e) {
+        // Table may not be created yet.
+        continue;
+      }
       if ((tableView._offline == null) || (tableView._offline.size() != 1)) {
         continue;
       }
@@ -84,7 +92,7 @@ public class TableViewsTest {
       if (tableView._offline == null) {
         continue;
       }
-      if ((tableView._realtime == null) || (tableView._realtime.size() != ControllerTestUtils.NUM_SERVER_INSTANCES)) {
+      if ((tableView._realtime == null) || (tableView._realtime.size() != TEST_INSTANCE.NUM_SERVER_INSTANCES)) {
         continue;
       }
       return;
@@ -100,7 +108,7 @@ public class TableViewsTest {
   @Test(dataProvider = "viewProvider")
   public void testTableNotFound(String view)
       throws Exception {
-    String url = ControllerTestUtils.getControllerRequestURLBuilder().forTableView("unknownTable", view, null);
+    String url = TEST_INSTANCE.getControllerRequestURLBuilder().forTableView("unknownTable", view, null);
     HttpURLConnection connection = (HttpURLConnection) new URL(url).openConnection();
     Assert.assertEquals(connection.getResponseCode(), 404);
   }
@@ -109,7 +117,7 @@ public class TableViewsTest {
   public void testBadRequest(String view)
       throws Exception {
     String url =
-        ControllerTestUtils.getControllerRequestURLBuilder().forTableView(OFFLINE_TABLE_NAME, view, "no_such_type");
+        TEST_INSTANCE.getControllerRequestURLBuilder().forTableView(OFFLINE_TABLE_NAME, view, "no_such_type");
     HttpURLConnection connection = (HttpURLConnection) new URL(url).openConnection();
     Assert.assertEquals(connection.getResponseCode(), 400);
   }
@@ -137,7 +145,7 @@ public class TableViewsTest {
     TableViews.TableView tableView = getTableView(HYBRID_TABLE_NAME, state, "realtime");
     Assert.assertNull(tableView._offline);
     Assert.assertNotNull(tableView._realtime);
-    Assert.assertEquals(tableView._realtime.size(), ControllerTestUtils.NUM_SERVER_INSTANCES);
+    Assert.assertEquals(tableView._realtime.size(), TEST_INSTANCE.NUM_SERVER_INSTANCES);
 
     tableView = getTableView(HYBRID_TABLE_NAME, state, "offline");
     Assert.assertNotNull(tableView._offline);
@@ -148,7 +156,7 @@ public class TableViewsTest {
     Assert.assertNotNull(tableView._offline);
     Assert.assertEquals(tableView._offline.size(), 0);
     Assert.assertNotNull(tableView._realtime);
-    Assert.assertEquals(tableView._realtime.size(), ControllerTestUtils.NUM_SERVER_INSTANCES);
+    Assert.assertEquals(tableView._realtime.size(), TEST_INSTANCE.NUM_SERVER_INSTANCES);
 
     tableView = getTableView(TableNameBuilder.OFFLINE.tableNameWithType(HYBRID_TABLE_NAME), state, null);
     Assert.assertNotNull(tableView._offline);
@@ -158,18 +166,18 @@ public class TableViewsTest {
     tableView = getTableView(TableNameBuilder.REALTIME.tableNameWithType(HYBRID_TABLE_NAME), state, null);
     Assert.assertNull(tableView._offline);
     Assert.assertNotNull(tableView._realtime);
-    Assert.assertEquals(tableView._realtime.size(), ControllerTestUtils.NUM_SERVER_INSTANCES);
+    Assert.assertEquals(tableView._realtime.size(), TEST_INSTANCE.NUM_SERVER_INSTANCES);
   }
 
   private TableViews.TableView getTableView(String tableName, String view, String tableType)
       throws Exception {
-    return JsonUtils.stringToObject(ControllerTestUtils.sendGetRequest(
-            ControllerTestUtils.getControllerRequestURLBuilder().forTableView(tableName, view, tableType)),
+    return JsonUtils.stringToObject(ControllerTest.sendGetRequest(
+            TEST_INSTANCE.getControllerRequestURLBuilder().forTableView(tableName, view, tableType)),
         TableViews.TableView.class);
   }
 
   @AfterClass
   public void tearDown() {
-    ControllerTestUtils.cleanup();
+    TEST_INSTANCE.cleanup();
   }
 }

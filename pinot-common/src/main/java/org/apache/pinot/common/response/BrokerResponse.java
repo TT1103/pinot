@@ -20,6 +20,7 @@ package org.apache.pinot.common.response;
 
 import java.util.List;
 import org.apache.pinot.common.response.broker.QueryProcessingException;
+import org.apache.pinot.common.response.broker.ResultTable;
 
 
 /**
@@ -108,6 +109,16 @@ public interface BrokerResponse {
   long getNumConsumingSegmentsQueried();
 
   /**
+   * Get number of consuming segments processed by server after server side pruning
+   */
+  long getNumConsumingSegmentsProcessed();
+
+  /**
+   * Get number of consuming segments that had at least one matching document
+   */
+  long getNumConsumingSegmentsMatched();
+
+  /**
    * Get the minimum freshness timestamp across consuming segments that were queried
    */
   long getMinConsumingFreshnessTimeMs();
@@ -126,6 +137,18 @@ public interface BrokerResponse {
    * Get number of exceptions recorded in the response.
    */
   int getExceptionsSize();
+
+  /**
+   * set the result table.
+   * @param resultTable result table to be set.
+   */
+  void setResultTable(ResultTable resultTable);
+
+  /**
+   * Get the result table.
+   * @return result table.
+   */
+  ResultTable getResultTable();
 
   /**
    * Get the list of exceptions
@@ -240,6 +263,48 @@ public interface BrokerResponse {
    * Set the total number of segments pruned on the Server side
    */
   void setNumSegmentsPrunedByServer(long numSegmentsPrunedByServer);
+
+  /**
+   * Get the total number of segments pruned due to invalid data or schema.
+   *
+   * This value is always lower or equal than {@link #getNumSegmentsPrunedByServer()}
+   */
+  long getNumSegmentsPrunedInvalid();
+
+  /**
+   * Set the total number of segments pruned due to invalid data or schema.
+   *
+   * This value is always lower or equal than {@link #getNumSegmentsPrunedByServer()}
+   */
+  void setNumSegmentsPrunedInvalid(long numSegmentsPrunedInvalid);
+
+  /**
+   * Get the total number of segments pruned by applying the limit optimization.
+   *
+   * This value is always lower or equal than {@link #getNumSegmentsPrunedByServer()}
+   */
+  long getNumSegmentsPrunedByLimit();
+
+  /**
+   * Set the total number of segments pruned by applying the limit optimization.
+   *
+   * This value is always lower or equal than {@link #getNumSegmentsPrunedByServer()}
+   */
+  void setNumSegmentsPrunedByLimit(long numSegmentsPrunedByLimit);
+
+  /**
+   * Get the total number of segments pruned applying value optimizations, like bloom filters.
+   *
+   * This value is always lower or equal than {@link #getNumSegmentsPrunedByServer()}
+   */
+  long getNumSegmentsPrunedByValue();
+
+  /**
+   * Set the total number of segments pruned applying value optimizations, like bloom filters.
+   *
+   * This value is always lower or equal than {@link #getNumSegmentsPrunedByServer()}
+   */
+  void setNumSegmentsPrunedByValue(long numSegmentsPrunedByValue);
 
   /**
    * Get the total number of segments with an EmptyFilterOperator when Explain Plan is called

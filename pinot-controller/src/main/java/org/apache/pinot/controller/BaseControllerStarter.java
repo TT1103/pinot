@@ -55,8 +55,11 @@ import org.apache.pinot.common.config.TlsConfig;
 import org.apache.pinot.common.function.FunctionRegistry;
 import org.apache.pinot.common.metrics.ControllerMeter;
 import org.apache.pinot.common.metrics.ControllerMetrics;
-import org.apache.pinot.common.metrics.PinotMetricUtils;
 import org.apache.pinot.common.metrics.ValidationMetrics;
+import org.apache.pinot.common.minion.InMemoryTaskManagerStatusCache;
+import org.apache.pinot.common.minion.TaskGeneratorMostRecentRunInfo;
+import org.apache.pinot.common.minion.TaskManagerStatusCache;
+import org.apache.pinot.common.utils.LoggerFileServer;
 import org.apache.pinot.common.utils.ServiceStartableUtils;
 import org.apache.pinot.common.utils.ServiceStatus;
 import org.apache.pinot.common.utils.TlsUtils;
@@ -94,6 +97,7 @@ import org.apache.pinot.core.util.ListenerConfigUtil;
 import org.apache.pinot.spi.crypt.PinotCrypterFactory;
 import org.apache.pinot.spi.env.PinotConfiguration;
 import org.apache.pinot.spi.filesystem.PinotFSFactory;
+import org.apache.pinot.spi.metrics.PinotMetricUtils;
 import org.apache.pinot.spi.metrics.PinotMetricsRegistry;
 import org.apache.pinot.spi.services.ServiceRole;
 import org.apache.pinot.spi.services.ServiceStartable;
@@ -148,6 +152,7 @@ public abstract class BaseControllerStarter implements ServiceStartable {
   protected RetentionManager _retentionManager;
   protected SegmentStatusChecker _segmentStatusChecker;
   protected PinotTaskManager _taskManager;
+  protected TaskManagerStatusCache<TaskGeneratorMostRecentRunInfo> _taskManagerStatusCache;
   protected PeriodicTaskScheduler _periodicTaskScheduler;
   protected PinotHelixTaskResourceManager _helixTaskResourceManager;
   protected PinotRealtimeSegmentManager _realtimeSegmentsManager;
@@ -203,8 +208,9 @@ public abstract class BaseControllerStarter implements ServiceStartable {
       // Do not use this before the invocation of {@link PinotHelixResourceManager::start()}, which happens in {@link
       // ControllerStarter::start()}
       _helixResourceManager = new PinotHelixResourceManager(_config);
+      // This executor service is used to do async tasks from multiget util or table rebalancing.
       _executorService =
-          Executors.newCachedThreadPool(new ThreadFactoryBuilder().setNameFormat("restapi-multiget-thread-%d").build());
+          Executors.newCachedThreadPool(new ThreadFactoryBuilder().setNameFormat("async-task-thread-%d").build());
     }
 
     // Initialize the table config tuner registry.
@@ -457,6 +463,7 @@ public abstract class BaseControllerStarter implements ServiceStartable {
         bind(_helixTaskResourceManager).to(PinotHelixTaskResourceManager.class);
         bind(_segmentCompletionManager).to(SegmentCompletionManager.class);
         bind(_taskManager).to(PinotTaskManager.class);
+        bind(_taskManagerStatusCache).to(TaskManagerStatusCache.class);
         bind(connectionManager).to(HttpConnectionManager.class);
         bind(_executorService).to(Executor.class);
         bind(_controllerMetrics).to(ControllerMetrics.class);
@@ -465,6 +472,11 @@ public abstract class BaseControllerStarter implements ServiceStartable {
         bind(_leadControllerManager).to(LeadControllerManager.class);
         bind(_periodicTaskScheduler).to(PeriodicTaskScheduler.class);
         bind(_sqlQueryExecutor).to(SqlQueryExecutor.class);
+        bind(_pinotLLCRealtimeSegmentManager).to(PinotLLCRealtimeSegmentManager.class);
+        String loggerRootDir = _config.getProperty(CommonConstants.Controller.CONFIG_OF_LOGGER_ROOT_DIR);
+        if (loggerRootDir != null) {
+          bind(new LoggerFileServer(loggerRootDir)).to(LoggerFileServer.class);
+        }
       }
     });
 
@@ -617,8 +629,9 @@ public abstract class BaseControllerStarter implements ServiceStartable {
     if (_tlsPort > 0) {
       updated |= HelixHelper.updateTlsPort(instanceConfig, _tlsPort);
     }
-    updated |= HelixHelper
-        .addDefaultTags(instanceConfig, () -> Collections.singletonList(CommonConstants.Helix.CONTROLLER_INSTANCE));
+    updated |= HelixHelper.addDefaultTags(instanceConfig,
+        () -> Collections.singletonList(CommonConstants.Helix.CONTROLLER_INSTANCE));
+    updated |= HelixHelper.removeDisabledPartitions(instanceConfig);
     if (updated) {
       HelixHelper.updateInstanceConfig(_helixParticipantManager, instanceConfig);
     }
@@ -628,13 +641,18 @@ public abstract class BaseControllerStarter implements ServiceStartable {
     return _controllerMode;
   }
 
+  protected TaskManagerStatusCache<TaskGeneratorMostRecentRunInfo> getTaskManagerStatusCache() {
+    return new InMemoryTaskManagerStatusCache();
+  }
+
   @VisibleForTesting
   protected List<PeriodicTask> setupControllerPeriodicTasks() {
     LOGGER.info("Setting up periodic tasks");
     List<PeriodicTask> periodicTasks = new ArrayList<>();
+    _taskManagerStatusCache = getTaskManagerStatusCache();
     _taskManager =
         new PinotTaskManager(_helixTaskResourceManager, _helixResourceManager, _leadControllerManager, _config,
-            _controllerMetrics);
+            _controllerMetrics, _taskManagerStatusCache);
     periodicTasks.add(_taskManager);
     _retentionManager =
         new RetentionManager(_helixResourceManager, _leadControllerManager, _config, _controllerMetrics);

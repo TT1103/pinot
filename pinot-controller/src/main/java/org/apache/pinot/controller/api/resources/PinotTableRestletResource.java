@@ -23,8 +23,12 @@ import com.fasterxml.jackson.databind.node.ArrayNode;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import com.google.common.base.Preconditions;
 import io.swagger.annotations.Api;
+import io.swagger.annotations.ApiKeyAuthDefinition;
 import io.swagger.annotations.ApiOperation;
 import io.swagger.annotations.ApiParam;
+import io.swagger.annotations.Authorization;
+import io.swagger.annotations.SecurityDefinition;
+import io.swagger.annotations.SwaggerDefinition;
 import it.unimi.dsi.fastutil.Arrays;
 import it.unimi.dsi.fastutil.Swapper;
 import it.unimi.dsi.fastutil.ints.IntComparator;
@@ -32,11 +36,15 @@ import java.io.IOException;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.Comparator;
+import java.util.HashMap;
+import java.util.HashSet;
 import java.util.LinkedList;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.Executor;
 import java.util.concurrent.ExecutorService;
+import java.util.stream.Collectors;
 import javax.annotation.Nullable;
 import javax.inject.Inject;
 import javax.ws.rs.Consumes;
@@ -56,10 +64,11 @@ import javax.ws.rs.core.Response;
 import org.apache.commons.configuration.BaseConfiguration;
 import org.apache.commons.configuration.Configuration;
 import org.apache.commons.httpclient.HttpConnectionManager;
+import org.apache.commons.lang3.StringUtils;
 import org.apache.commons.lang3.tuple.Pair;
 import org.apache.helix.AccessOption;
-import org.apache.helix.ZNRecord;
 import org.apache.helix.store.zk.ZkHelixPropertyStore;
+import org.apache.helix.zookeeper.datamodel.ZNRecord;
 import org.apache.pinot.common.exception.InvalidConfigException;
 import org.apache.pinot.common.exception.SchemaNotFoundException;
 import org.apache.pinot.common.exception.TableNotFoundException;
@@ -71,6 +80,7 @@ import org.apache.pinot.controller.api.access.AccessControlFactory;
 import org.apache.pinot.controller.api.access.AccessControlUtils;
 import org.apache.pinot.controller.api.access.AccessType;
 import org.apache.pinot.controller.api.access.Authenticate;
+import org.apache.pinot.controller.api.access.ManualAuthorization;
 import org.apache.pinot.controller.api.exception.ControllerApplicationException;
 import org.apache.pinot.controller.api.exception.InvalidTableConfigException;
 import org.apache.pinot.controller.api.exception.TableAlreadyExistsException;
@@ -88,6 +98,7 @@ import org.apache.pinot.spi.config.table.TableStats;
 import org.apache.pinot.spi.config.table.TableStatus;
 import org.apache.pinot.spi.config.table.TableType;
 import org.apache.pinot.spi.data.Schema;
+import org.apache.pinot.spi.utils.CommonConstants;
 import org.apache.pinot.spi.utils.JsonUtils;
 import org.apache.pinot.spi.utils.RebalanceConfigConstants;
 import org.apache.pinot.spi.utils.builder.TableNameBuilder;
@@ -96,8 +107,12 @@ import org.glassfish.grizzly.http.server.Request;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import static org.apache.pinot.spi.utils.CommonConstants.SWAGGER_AUTHORIZATION_KEY;
 
-@Api(tags = Constants.TABLE_TAG)
+
+@Api(tags = Constants.TABLE_TAG, authorizations = {@Authorization(value = SWAGGER_AUTHORIZATION_KEY)})
+@SwaggerDefinition(securityDefinition = @SecurityDefinition(apiKeyAuthDefinitions = @ApiKeyAuthDefinition(name =
+    HttpHeaders.AUTHORIZATION, in = ApiKeyAuthDefinition.ApiKeyLocation.HEADER, key = SWAGGER_AUTHORIZATION_KEY)))
 @Path("/")
 public class PinotTableRestletResource {
   /**
@@ -138,7 +153,6 @@ public class PinotTableRestletResource {
 
   @Inject
   AccessControlFactory _accessControlFactory;
-  AccessControlUtils _accessControlUtils = new AccessControlUtils();
 
   @Inject
   Executor _executor;
@@ -155,6 +169,7 @@ public class PinotTableRestletResource {
   @Produces(MediaType.APPLICATION_JSON)
   @Path("/tables")
   @ApiOperation(value = "Adds a table", notes = "Adds a table")
+  @ManualAuthorization // performed after parsing table configs
   public ConfigSuccessResponse addTable(
       String tableConfigStr,
       @ApiParam(value = "comma separated list of validation type(s) to skip. supported types: (ALL|TASK|UPSERT)")
@@ -172,7 +187,7 @@ public class PinotTableRestletResource {
       // validate permission
       tableName = tableConfig.getTableName();
       String endpointUrl = request.getRequestURL().toString();
-      _accessControlUtils.validatePermission(tableName, AccessType.CREATE, httpHeaders, endpointUrl,
+      AccessControlUtils.validatePermission(tableName, AccessType.CREATE, httpHeaders, endpointUrl,
           _accessControlFactory.create());
 
       Schema schema = _pinotHelixResourceManager.getSchemaForTableConfig(tableConfig);
@@ -182,8 +197,11 @@ public class PinotTableRestletResource {
       // TableConfigUtils.validate(...) is used across table create/update.
       TableConfigUtils.validate(tableConfig, schema, typesToSkip, _controllerConf.isDisableIngestionGroovy());
       // TableConfigUtils.validateTableName(...) checks table name rules.
-      // So it won't effect already created tables.
-      TableConfigUtils.validateTableName(tableConfig);
+      // So it won't affect already created tables.
+      boolean allowTableNameWithDatabase = _controllerConf.getProperty(
+          CommonConstants.Helix.ALLOW_TABLE_NAME_WITH_DATABASE,
+          CommonConstants.Helix.DEFAULT_ALLOW_TABLE_NAME_WITH_DATABASE);
+        TableConfigUtils.validateTableName(tableConfig, allowTableNameWithDatabase);
     } catch (Exception e) {
       throw new ControllerApplicationException(LOGGER, e.getMessage(), Response.Status.BAD_REQUEST, e);
     }
@@ -199,7 +217,7 @@ public class PinotTableRestletResource {
       // TODO: validate that table was created successfully
       // (in realtime case, metadata might not have been created but would be created successfully in the next run of
       // the validation manager)
-      return new ConfigSuccessResponse("Table " + tableName + " succesfully added",
+      return new ConfigSuccessResponse("Table " + tableName + " successfully added",
           tableConfigAndUnrecognizedProperties.getRight());
     } catch (Exception e) {
       _controllerMetrics.addMeteredGlobalValue(ControllerMeter.CONTROLLER_TABLE_ADD_ERROR, 1L);
@@ -214,7 +232,7 @@ public class PinotTableRestletResource {
     }
   }
 
-  @PUT
+  @GET
   @Produces(MediaType.APPLICATION_JSON)
   @Path("/tables/recommender")
   @ApiOperation(value = "Recommend config", notes = "Recommend a config with input json")
@@ -231,45 +249,55 @@ public class PinotTableRestletResource {
   @Path("/tables")
   @ApiOperation(value = "Lists all tables in cluster", notes = "Lists all tables in cluster")
   public String listTables(@ApiParam(value = "realtime|offline") @QueryParam("type") String tableTypeStr,
+      @ApiParam(value = "Task type") @QueryParam("taskType") String taskType,
       @ApiParam(value = "name|creationTime|lastModifiedTime") @QueryParam("sortType") String sortTypeStr,
       @ApiParam(value = "true|false") @QueryParam("sortAsc") @DefaultValue("true") boolean sortAsc) {
     try {
-      List<String> tableNames;
       TableType tableType = null;
       if (tableTypeStr != null) {
         tableType = TableType.valueOf(tableTypeStr.toUpperCase());
       }
       SortType sortType = sortTypeStr != null ? SortType.valueOf(sortTypeStr.toUpperCase()) : SortType.NAME;
 
-      if (tableType == null) {
-        if (sortType == SortType.NAME) {
-          tableNames = _pinotHelixResourceManager.getAllRawTables();
-        } else {
-          // NOTE: Need to read actual table names (with type suffix) when not sorting on name because we need to read
-          //       the stats for the ZK records
-          tableNames = _pinotHelixResourceManager.getAllTables();
+      List<String> tableNamesWithType = tableType == null ? _pinotHelixResourceManager.getAllTables()
+          : (tableType == TableType.REALTIME ? _pinotHelixResourceManager.getAllRealtimeTables()
+              : _pinotHelixResourceManager.getAllOfflineTables());
+
+      if (StringUtils.isNotBlank(taskType)) {
+        Set<String> tableNamesForTaskType = new HashSet<>();
+        for (String tableNameWithType : tableNamesWithType) {
+          TableConfig tableConfig = _pinotHelixResourceManager.getTableConfig(tableNameWithType);
+          if (tableConfig != null && tableConfig.getTaskConfig() != null && tableConfig.getTaskConfig()
+              .isTaskTypeEnabled(taskType)) {
+            tableNamesForTaskType.add(tableNameWithType);
+          }
         }
-      } else {
-        if (tableType == TableType.REALTIME) {
-          tableNames = _pinotHelixResourceManager.getAllRealtimeTables();
-        } else {
-          tableNames = _pinotHelixResourceManager.getAllOfflineTables();
-        }
+        tableNamesWithType.retainAll(tableNamesForTaskType);
       }
 
+      List<String> tableNames;
       if (sortType == SortType.NAME) {
-        tableNames.sort(sortAsc ? null : Comparator.reverseOrder());
+        if (tableType == null && StringUtils.isBlank(taskType)) {
+          List<String> rawTableNames = tableNamesWithType.stream().map(TableNameBuilder::extractRawTableName).distinct()
+              .collect(Collectors.toList());
+          rawTableNames.sort(sortAsc ? null : Comparator.reverseOrder());
+          tableNames = rawTableNames;
+        } else {
+          tableNamesWithType.sort(sortAsc ? null : Comparator.reverseOrder());
+          tableNames = tableNamesWithType;
+        }
       } else {
         int sortFactor = sortAsc ? 1 : -1;
         ZkHelixPropertyStore<ZNRecord> propertyStore = _pinotHelixResourceManager.getPropertyStore();
-        int numTables = tableNames.size();
+        int numTables = tableNamesWithType.size();
         List<String> zkPaths = new ArrayList<>(numTables);
-        for (String tableNameWithType : tableNames) {
+        for (String tableNameWithType : tableNamesWithType) {
           zkPaths.add(ZKMetadataProvider.constructPropertyStorePathForResourceConfig(tableNameWithType));
         }
         Stat[] stats = propertyStore.getStats(zkPaths, AccessOption.PERSISTENT);
         for (int i = 0; i < numTables; i++) {
-          Preconditions.checkState(stats[i] != null, "Failed to read ZK stats for table: %s", tableNames.get(i));
+          Preconditions.checkState(stats[i] != null, "Failed to read ZK stats for table: %s",
+              tableNamesWithType.get(i));
         }
         IntComparator comparator;
         if (sortType == SortType.CREATIONTIME) {
@@ -283,11 +311,12 @@ public class PinotTableRestletResource {
           stats[i] = stats[j];
           stats[j] = tempStat;
 
-          String tempTableName = tableNames.get(i);
-          tableNames.set(i, tableNames.get(j));
-          tableNames.set(j, tempTableName);
+          String tempTableName = tableNamesWithType.get(i);
+          tableNamesWithType.set(i, tableNamesWithType.get(j));
+          tableNamesWithType.set(j, tempTableName);
         };
         Arrays.quickSort(0, numTables, comparator, swapper);
+       tableNames = tableNamesWithType;
       }
 
       return JsonUtils.newObjectNode().set("tables", JsonUtils.objectToJsonNode(tableNames)).toString();
@@ -344,7 +373,7 @@ public class PinotTableRestletResource {
 
       // validate if user has permission to change the table state
       String endpointUrl = request.getRequestURL().toString();
-      _accessControlUtils
+      AccessControlUtils
           .validatePermission(tableName, AccessType.UPDATE, httpHeaders, endpointUrl, _accessControlFactory.create());
 
       ArrayNode ret = JsonUtils.newArrayNode();
@@ -390,7 +419,10 @@ public class PinotTableRestletResource {
   @ApiOperation(value = "Deletes a table", notes = "Deletes a table")
   public SuccessResponse deleteTable(
       @ApiParam(value = "Name of the table to delete", required = true) @PathParam("tableName") String tableName,
-      @ApiParam(value = "realtime|offline") @QueryParam("type") String tableTypeStr) {
+      @ApiParam(value = "realtime|offline") @QueryParam("type") String tableTypeStr,
+      @ApiParam(value = "Retention period for the table segments (e.g. 12h, 3d); If not set, the retention period "
+          + "will default to the first config that's not null: the cluster setting, then '7d'. Using 0d or -1d will "
+          + "instantly delete segments without retention") @QueryParam("retention") String retentionPeriod) {
     TableType tableType = Constants.validateTableType(tableTypeStr);
 
     List<String> tablesDeleted = new LinkedList<>();
@@ -400,7 +432,7 @@ public class PinotTableRestletResource {
         tableExist = _pinotHelixResourceManager.hasOfflineTable(tableName);
         // Even the table name does not exist, still go on to delete remaining table metadata in case a previous delete
         // did not complete.
-        _pinotHelixResourceManager.deleteOfflineTable(tableName);
+        _pinotHelixResourceManager.deleteOfflineTable(tableName, retentionPeriod);
         if (tableExist) {
           tablesDeleted.add(TableNameBuilder.OFFLINE.tableNameWithType(tableName));
         }
@@ -409,7 +441,7 @@ public class PinotTableRestletResource {
         tableExist = _pinotHelixResourceManager.hasRealtimeTable(tableName);
         // Even the table name does not exist, still go on to delete remaining table metadata in case a previous delete
         // did not complete.
-        _pinotHelixResourceManager.deleteRealtimeTable(tableName);
+        _pinotHelixResourceManager.deleteRealtimeTable(tableName, retentionPeriod);
         if (tableExist) {
           tablesDeleted.add(TableNameBuilder.REALTIME.tableNameWithType(tableName));
         }
@@ -501,10 +533,12 @@ public class PinotTableRestletResource {
   @ApiOperation(value = "Validate table config for a table",
       notes = "This API returns the table config that matches the one you get from 'GET /tables/{tableName}'."
           + " This allows us to validate table config before apply.")
+  @ManualAuthorization // performed after parsing TableConfig
   public ObjectNode checkTableConfig(
       String tableConfigStr,
       @ApiParam(value = "comma separated list of validation type(s) to skip. supported types: (ALL|TASK|UPSERT)")
-      @QueryParam("validationTypesToSkip") @Nullable String typesToSkip) {
+      @QueryParam("validationTypesToSkip") @Nullable String typesToSkip, @Context HttpHeaders httpHeaders,
+      @Context Request request) {
     Pair<TableConfig, Map<String, Object>> tableConfig;
     try {
       tableConfig = JsonUtils.stringToObjectAndUnrecognizedProperties(tableConfigStr, TableConfig.class);
@@ -512,6 +546,13 @@ public class PinotTableRestletResource {
       String msg = String.format("Invalid table config json string: %s", tableConfigStr);
       throw new ControllerApplicationException(LOGGER, msg, Response.Status.BAD_REQUEST, e);
     }
+
+    // validate permission
+    String tableName = tableConfig.getLeft().getTableName();
+    String endpointUrl = request.getRequestURL().toString();
+    AccessControlUtils.validatePermission(tableName, AccessType.READ, httpHeaders, endpointUrl,
+        _accessControlFactory.create());
+
     ObjectNode validationResponse =
         validateConfig(tableConfig.getLeft(), _pinotHelixResourceManager.getSchemaForTableConfig(tableConfig.getLeft()),
             typesToSkip);
@@ -529,15 +570,25 @@ public class PinotTableRestletResource {
           + "Validate given table config and schema. If specified schema is null, attempt to retrieve schema using the "
           + "table name. This API returns the table config that matches the one you get from 'GET /tables/{tableName}'."
           + " This allows us to validate table config before apply.")
+  @ManualAuthorization // performed after parsing TableAndSchemaConfig
   public String validateTableAndSchema(
       TableAndSchemaConfig tableSchemaConfig,
       @ApiParam(value = "comma separated list of validation type(s) to skip. supported types: (ALL|TASK|UPSERT)")
-      @QueryParam("validationTypesToSkip") @Nullable String typesToSkip) {
+      @QueryParam("validationTypesToSkip") @Nullable String typesToSkip, @Context HttpHeaders httpHeaders,
+      @Context Request request) {
     TableConfig tableConfig = tableSchemaConfig.getTableConfig();
     Schema schema = tableSchemaConfig.getSchema();
+
     if (schema == null) {
       schema = _pinotHelixResourceManager.getSchemaForTableConfig(tableConfig);
     }
+
+    // validate permission
+    String schemaName = schema != null ? schema.getSchemaName() : null;
+    String endpointUrl = request.getRequestURL().toString();
+    AccessControlUtils.validatePermission(schemaName, AccessType.READ, httpHeaders, endpointUrl,
+        _accessControlFactory.create());
+
     return validateConfig(tableSchemaConfig.getTableConfig(), schema, typesToSkip).toString();
   }
 
@@ -768,6 +819,28 @@ public class PinotTableRestletResource {
           Response.Status.INTERNAL_SERVER_ERROR, ioe);
     }
     return segmentsMetadata;
+  }
+
+  @GET
+  @Path("table/{tableName}/jobs")
+  @Produces(MediaType.APPLICATION_JSON)
+  @ApiOperation(value = "Get list of controller jobs for this table",
+      notes = "Get list of controller jobs for this table")
+  public Map<String, Map<String, String>> getControllerJobs(
+      @ApiParam(value = "Name of the table", required = true) @PathParam("tableName") String tableName,
+      @ApiParam(value = "OFFLINE|REALTIME") @QueryParam("type") String tableTypeStr
+  ) {
+    TableType tableTypeFromRequest = Constants.validateTableType(tableTypeStr);
+    List<String> tableNamesWithType =
+        ResourceUtils.getExistingTableNamesWithType(_pinotHelixResourceManager, tableName, tableTypeFromRequest,
+            LOGGER);
+
+    Map<String, Map<String, String>> result = new HashMap<>();
+    for (String tableNameWithType : tableNamesWithType) {
+      result.putAll(_pinotHelixResourceManager.getAllJobsForTable(tableNameWithType));
+    }
+
+    return result;
   }
 
   /**

@@ -21,10 +21,14 @@ package org.apache.pinot.controller.api.resources;
 import com.fasterxml.jackson.annotation.JsonProperty;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import io.swagger.annotations.Api;
+import io.swagger.annotations.ApiKeyAuthDefinition;
 import io.swagger.annotations.ApiOperation;
 import io.swagger.annotations.ApiParam;
 import io.swagger.annotations.ApiResponse;
 import io.swagger.annotations.ApiResponses;
+import io.swagger.annotations.Authorization;
+import io.swagger.annotations.SecurityDefinition;
+import io.swagger.annotations.SwaggerDefinition;
 import java.util.List;
 import java.util.Map;
 import javax.inject.Inject;
@@ -39,6 +43,7 @@ import javax.ws.rs.Path;
 import javax.ws.rs.PathParam;
 import javax.ws.rs.Produces;
 import javax.ws.rs.QueryParam;
+import javax.ws.rs.core.HttpHeaders;
 import javax.ws.rs.core.MediaType;
 import javax.ws.rs.core.Response;
 import org.apache.helix.model.InstanceConfig;
@@ -54,8 +59,12 @@ import org.apache.pinot.spi.utils.JsonUtils;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import static org.apache.pinot.spi.utils.CommonConstants.SWAGGER_AUTHORIZATION_KEY;
 
-@Api(tags = Constants.INSTANCE_TAG)
+
+@Api(tags = Constants.INSTANCE_TAG, authorizations = {@Authorization(value = SWAGGER_AUTHORIZATION_KEY)})
+@SwaggerDefinition(securityDefinition = @SecurityDefinition(apiKeyAuthDefinitions = @ApiKeyAuthDefinition(name =
+    HttpHeaders.AUTHORIZATION, in = ApiKeyAuthDefinition.ApiKeyLocation.HEADER, key = SWAGGER_AUTHORIZATION_KEY)))
 @Path("/")
 public class PinotInstanceRestletResource {
   private static final Logger LOGGER = LoggerFactory.getLogger(PinotInstanceRestletResource.class);
@@ -113,6 +122,8 @@ public class PinotInstanceRestletResource {
     response.set("pools", JsonUtils.objectToJsonNode(instanceConfig.getRecord().getMapField(InstanceUtils.POOL_KEY)));
     response.put("grpcPort", getGrpcPort(instanceConfig));
     response.put("adminPort", getAdminPort(instanceConfig));
+    response.put("queryServicePort", getQueryServicePort(instanceConfig));
+    response.put("queryMailboxPort", getQueryMailboxPort(instanceConfig));
     String queriesDisabled = instanceConfig.getRecord().getSimpleField(CommonConstants.Helix.QUERIES_DISABLED);
     if ("true".equalsIgnoreCase(queriesDisabled)) {
       response.put(CommonConstants.Helix.QUERIES_DISABLED, "true");
@@ -143,6 +154,32 @@ public class PinotInstanceRestletResource {
       }
     }
     return Instance.NOT_SET_ADMIN_PORT_VALUE;
+  }
+
+  private int getQueryServicePort(InstanceConfig instanceConfig) {
+    String queryServicePortStr = instanceConfig.getRecord().getSimpleField(
+        CommonConstants.Helix.Instance.MULTI_STAGE_QUERY_ENGINE_SERVICE_PORT_KEY);
+    if (queryServicePortStr != null) {
+      try {
+        return Integer.parseInt(queryServicePortStr);
+      } catch (Exception e) {
+        LOGGER.warn("Illegal service port: {} for instance: {}", queryServicePortStr, instanceConfig.getInstanceName());
+      }
+    }
+    return Instance.NOT_SET_GRPC_PORT_VALUE;
+  }
+
+  private int getQueryMailboxPort(InstanceConfig instanceConfig) {
+    String queryMailboxPortStr = instanceConfig.getRecord().getSimpleField(
+        CommonConstants.Helix.Instance.MULTI_STAGE_QUERY_ENGINE_MAILBOX_PORT_KEY);
+    if (queryMailboxPortStr != null) {
+      try {
+        return Integer.parseInt(queryMailboxPortStr);
+      } catch (Exception e) {
+        LOGGER.warn("Illegal mailbox port: {} for instance: {}", queryMailboxPortStr, instanceConfig.getInstanceName());
+      }
+    }
+    return Instance.NOT_SET_GRPC_PORT_VALUE;
   }
 
   private Map<String, String> getSystemResourceInfo(InstanceConfig instanceConfig) {

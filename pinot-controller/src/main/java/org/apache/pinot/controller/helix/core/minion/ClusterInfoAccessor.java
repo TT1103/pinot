@@ -22,10 +22,10 @@ import java.util.Collections;
 import java.util.List;
 import java.util.Map;
 import javax.annotation.Nullable;
-import org.apache.helix.ZNRecord;
 import org.apache.helix.model.HelixConfigScope;
 import org.apache.helix.model.builder.HelixConfigScopeBuilder;
 import org.apache.helix.task.TaskState;
+import org.apache.helix.zookeeper.datamodel.ZNRecord;
 import org.apache.pinot.common.lineage.SegmentLineage;
 import org.apache.pinot.common.lineage.SegmentLineageAccessHelper;
 import org.apache.pinot.common.metadata.ZKMetadataProvider;
@@ -95,7 +95,8 @@ public class ClusterInfoAccessor {
   }
 
   /**
-   * Fetches the ZNRecord under MINION_TASK_METADATA/${taskType} for the given taskType and tableNameWithType
+   * Fetches the ZNRecord under MINION_TASK_METADATA/${tableNameWithType}/${taskType} for the given
+   * taskType and tableNameWithType
    *
    * @param taskType The type of the minion task
    * @param tableNameWithType Table name with type
@@ -157,6 +158,15 @@ public class ClusterInfoAccessor {
    */
   public String getVipUrl() {
     return _controllerConf.generateVipUrl();
+  }
+
+  /**
+   * Get the data dir.
+   *
+   * @return the data dir.
+   */
+  public String getDataDir() {
+    return _controllerConf.getDataDir();
   }
 
   /**

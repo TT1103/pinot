@@ -223,13 +223,14 @@ public class SegmentColumnarIndexCreator implements SegmentCreator {
       if (dictEnabledColumn) {
         // Create dictionary-encoded index
         // Initialize dictionary creator
+        // TODO: Dictionary creator holds all unique values on heap. Consider keeping dictionary instead of creator
+        //       which uses off-heap memory.
         SegmentDictionaryCreator dictionaryCreator =
-            new SegmentDictionaryCreator(columnIndexCreationInfo.getSortedUniqueElementsArray(), fieldSpec, _indexDir,
-                columnIndexCreationInfo.isUseVarLengthDictionary());
+            new SegmentDictionaryCreator(fieldSpec, _indexDir, columnIndexCreationInfo.isUseVarLengthDictionary());
         _dictionaryCreatorMap.put(columnName, dictionaryCreator);
         // Create dictionary
         try {
-          dictionaryCreator.build();
+          dictionaryCreator.build(columnIndexCreationInfo.getSortedUniqueElementsArray());
         } catch (Exception e) {
           LOGGER.error("Error building dictionary for field: {}, cardinality: {}, number of bytes per entry: {}",
               fieldSpec.getName(), columnIndexCreationInfo.getDistinctValueCount(),
@@ -239,7 +240,7 @@ public class SegmentColumnarIndexCreator implements SegmentCreator {
       }
 
       if (bloomFilterColumns.contains(columnName)) {
-        if (indexingConfig != null && indexingConfig.getBloomFilterConfigs() != null
+        if (indexingConfig.getBloomFilterConfigs() != null
             && indexingConfig.getBloomFilterConfigs().containsKey(columnName)) {
           _bloomFilterCreatorMap.put(columnName, _indexCreatorProvider.newBloomFilterCreator(
               context.forBloomFilter(indexingConfig.getBloomFilterConfigs().get(columnName))));
@@ -249,7 +250,7 @@ public class SegmentColumnarIndexCreator implements SegmentCreator {
         }
       }
 
-      if (rangeIndexColumns.contains(columnName)) {
+      if (!columnIndexCreationInfo.isSorted() && rangeIndexColumns.contains(columnName)) {
         _rangeIndexFilterCreatorMap.put(columnName,
             _indexCreatorProvider.newRangeIndexCreator(context.forRangeIndex(rangeIndexVersion)));
       }
@@ -386,30 +387,78 @@ public class SegmentColumnarIndexCreator implements SegmentCreator {
       // bloom filter
       BloomFilterCreator bloomFilterCreator = _bloomFilterCreatorMap.get(columnName);
       if (bloomFilterCreator != null) {
-        bloomFilterCreator.add(columnValueToIndex.toString());
+        if (fieldSpec.isSingleValueField()) {
+          bloomFilterCreator.add(columnValueToIndex.toString());
+        } else {
+          Object[] values = (Object[]) columnValueToIndex;
+          for (Object value : values) {
+            bloomFilterCreator.add(value.toString());
+          }
+        }
       }
 
       // range index
       CombinedInvertedIndexCreator combinedInvertedIndexCreator = _rangeIndexFilterCreatorMap.get(columnName);
       if (combinedInvertedIndexCreator != null) {
         if (dictionaryCreator != null) {
-          combinedInvertedIndexCreator.add(dictionaryCreator.indexOfSV(columnValueToIndex));
+          if (fieldSpec.isSingleValueField()) {
+            combinedInvertedIndexCreator.add(dictionaryCreator.indexOfSV(columnValueToIndex));
+          } else {
+            int[] dictIds = dictionaryCreator.indexOfMV(columnValueToIndex);
+            combinedInvertedIndexCreator.add(dictIds, dictIds.length);
+          }
         } else {
-          switch (fieldSpec.getDataType()) {
-            case INT:
-              combinedInvertedIndexCreator.add((Integer) columnValueToIndex);
-              break;
-            case LONG:
-              combinedInvertedIndexCreator.add((Long) columnValueToIndex);
-              break;
-            case FLOAT:
-              combinedInvertedIndexCreator.add((Float) columnValueToIndex);
-              break;
-            case DOUBLE:
-              combinedInvertedIndexCreator.add((Double) columnValueToIndex);
-              break;
-            default:
-              throw new RuntimeException("Unsupported data type " + fieldSpec.getDataType() + " for range index");
+          if (fieldSpec.isSingleValueField()) {
+            switch (fieldSpec.getDataType()) {
+              case INT:
+                combinedInvertedIndexCreator.add((Integer) columnValueToIndex);
+                break;
+              case LONG:
+                combinedInvertedIndexCreator.add((Long) columnValueToIndex);
+                break;
+              case FLOAT:
+                combinedInvertedIndexCreator.add((Float) columnValueToIndex);
+                break;
+              case DOUBLE:
+                combinedInvertedIndexCreator.add((Double) columnValueToIndex);
+                break;
+              default:
+                throw new RuntimeException("Unsupported data type " + fieldSpec.getDataType() + " for range index");
+            }
+          } else {
+            Object[] values = (Object[]) columnValueToIndex;
+            switch (fieldSpec.getDataType()) {
+              case INT:
+                int[] intValues = new int[values.length];
+                for (int i = 0; i < values.length; i++) {
+                  intValues[i] = (Integer) values[i];
+                }
+                combinedInvertedIndexCreator.add(intValues, values.length);
+                break;
+              case LONG:
+                long[] longValues = new long[values.length];
+                for (int i = 0; i < values.length; i++) {
+                  longValues[i] = (Long) values[i];
+                }
+                combinedInvertedIndexCreator.add(longValues, values.length);
+                break;
+              case FLOAT:
+                float[] floatValues = new float[values.length];
+                for (int i = 0; i < values.length; i++) {
+                  floatValues[i] = (Float) values[i];
+                }
+                combinedInvertedIndexCreator.add(floatValues, values.length);
+                break;
+              case DOUBLE:
+                double[] doubleValues = new double[values.length];
+                for (int i = 0; i < values.length; i++) {
+                  doubleValues[i] = (Double) values[i];
+                }
+                combinedInvertedIndexCreator.add(doubleValues, values.length);
+                break;
+              default:
+                throw new RuntimeException("Unsupported data type " + fieldSpec.getDataType() + " for range index");
+            }
           }
         }
       }
@@ -615,6 +664,9 @@ public class SegmentColumnarIndexCreator implements SegmentCreator {
   @Override
   public void seal()
       throws ConfigurationException, IOException {
+    for (SegmentDictionaryCreator dictionaryCreator : _dictionaryCreatorMap.values()) {
+      dictionaryCreator.postIndexingCleanup();
+    }
     for (DictionaryBasedInvertedIndexCreator invertedIndexCreator : _invertedIndexCreatorMap.values()) {
       invertedIndexCreator.seal();
     }
@@ -731,7 +783,7 @@ public class SegmentColumnarIndexCreator implements SegmentCreator {
       SegmentDictionaryCreator dictionaryCreator = _dictionaryCreatorMap.get(column);
       int dictionaryElementSize = (dictionaryCreator != null) ? dictionaryCreator.getNumBytesPerEntry() : 0;
       addColumnMetadataInfo(properties, column, columnIndexCreationInfo, _totalDocs, _schema.getFieldSpecFor(column),
-          _dictionaryCreatorMap.containsKey(column), dictionaryElementSize);
+          dictionaryCreator != null, dictionaryElementSize);
     }
 
     SegmentZKPropsConfig segmentZKPropsConfig = _config.getSegmentZKPropsConfig();
@@ -804,9 +856,13 @@ public class SegmentColumnarIndexCreator implements SegmentCreator {
       String maxValue) {
     if (isValidPropertyValue(minValue)) {
       properties.setProperty(getKeyFor(column, MIN_VALUE), minValue);
+    } else {
+      properties.setProperty(getKeyFor(column, MIN_MAX_VALUE_INVALID), true);
     }
     if (isValidPropertyValue(maxValue)) {
       properties.setProperty(getKeyFor(column, MAX_VALUE), maxValue);
+    } else {
+      properties.setProperty(getKeyFor(column, MIN_MAX_VALUE_INVALID), true);
     }
   }
 

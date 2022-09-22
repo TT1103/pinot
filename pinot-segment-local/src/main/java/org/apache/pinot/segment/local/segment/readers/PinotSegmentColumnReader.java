@@ -97,7 +97,7 @@ public class PinotSegmentColumnReader implements Closeable {
       // NOTE: Only support single-value raw index
       assert _forwardIndexReader.isSingleValue();
 
-      switch (_forwardIndexReader.getValueType()) {
+      switch (_forwardIndexReader.getStoredType()) {
         case INT:
           return _forwardIndexReader.getInt(docId, _forwardIndexReaderContext);
         case LONG:
@@ -106,6 +106,8 @@ public class PinotSegmentColumnReader implements Closeable {
           return _forwardIndexReader.getFloat(docId, _forwardIndexReaderContext);
         case DOUBLE:
           return _forwardIndexReader.getDouble(docId, _forwardIndexReaderContext);
+        case BIG_DECIMAL:
+          return _forwardIndexReader.getBigDecimal(docId, _forwardIndexReaderContext);
         case STRING:
           return _forwardIndexReader.getString(docId, _forwardIndexReaderContext);
         case BYTES:

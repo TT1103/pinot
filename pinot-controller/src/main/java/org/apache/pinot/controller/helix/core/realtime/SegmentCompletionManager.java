@@ -118,11 +118,6 @@ public class SegmentCompletionManager {
     return System.currentTimeMillis();
   }
 
-  public StreamPartitionMsgOffsetFactory getStreamPartitionMsgOffsetFactory(String segmentName) {
-    final LLCSegmentName llcSegmentName = new LLCSegmentName(segmentName);
-    return getStreamPartitionMsgOffsetFactory(llcSegmentName);
-  }
-
   protected StreamPartitionMsgOffsetFactory getStreamPartitionMsgOffsetFactory(LLCSegmentName llcSegmentName) {
     final String rawTableName = llcSegmentName.getTableName();
     TableConfig tableConfig = _segmentManager.getTableConfig(TableNameBuilder.REALTIME.tableNameWithType(rawTableName));
@@ -149,7 +144,7 @@ public class SegmentCompletionManager {
         final String realtimeTableName = TableNameBuilder.REALTIME.tableNameWithType(segmentName.getTableName());
         SegmentZKMetadata segmentMetadata =
             _segmentManager.getSegmentZKMetadata(realtimeTableName, segmentName.getSegmentName(), null);
-        if (segmentMetadata.getStatus().equals(CommonConstants.Segment.Realtime.Status.DONE)) {
+        if (segmentMetadata.getStatus() == CommonConstants.Segment.Realtime.Status.DONE) {
           // Best to go through the state machine for this case as well, so that all code regarding state handling is
           // in one place
           // Also good for synchronization, because it is possible that multiple threads take this path, and we don't
@@ -1175,7 +1170,8 @@ public class SegmentCompletionManager {
      */
     private boolean isWinnerPicked(String preferredInstance, long now, final String stopReason) {
       if ((SegmentCompletionProtocol.REASON_ROW_LIMIT.equals(stopReason)
-          || SegmentCompletionProtocol.REASON_END_OF_PARTITION_GROUP.equals(stopReason))
+          || SegmentCompletionProtocol.REASON_END_OF_PARTITION_GROUP.equals(stopReason)
+          || SegmentCompletionProtocol.REASON_FORCE_COMMIT_MESSAGE_RECEIVED.equals(stopReason))
           && _commitStateMap.size() == 1) {
         _winner = preferredInstance;
         _winningOffset = _commitStateMap.get(preferredInstance);

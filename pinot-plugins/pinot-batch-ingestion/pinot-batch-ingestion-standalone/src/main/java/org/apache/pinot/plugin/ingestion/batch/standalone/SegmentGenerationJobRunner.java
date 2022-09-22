@@ -23,8 +23,6 @@ import java.io.IOException;
 import java.net.URI;
 import java.net.URISyntaxException;
 import java.net.URLEncoder;
-import java.nio.file.FileSystems;
-import java.nio.file.PathMatcher;
 import java.nio.file.Paths;
 import java.util.ArrayList;
 import java.util.Collections;
@@ -35,11 +33,13 @@ import java.util.UUID;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.atomic.AtomicReference;
 import org.apache.commons.io.FileUtils;
 import org.apache.pinot.common.segment.generation.SegmentGenerationUtils;
 import org.apache.pinot.common.utils.TarGzCompressionUtils;
 import org.apache.pinot.plugin.ingestion.batch.common.SegmentGenerationJobUtils;
 import org.apache.pinot.plugin.ingestion.batch.common.SegmentGenerationTaskRunner;
+import org.apache.pinot.segment.local.utils.ConsistentDataPushUtils;
 import org.apache.pinot.spi.config.table.TableConfig;
 import org.apache.pinot.spi.data.Schema;
 import org.apache.pinot.spi.env.PinotConfiguration;
@@ -70,6 +70,8 @@ public class SegmentGenerationJobRunner implements IngestionJobRunner {
   private CountDownLatch _segmentCreationTaskCountDownLatch;
   private Schema _schema;
   private TableConfig _tableConfig;
+  private AtomicReference<Exception> _failure;
+  private boolean _consistentPushEnabled;
 
   public SegmentGenerationJobRunner() {
   }
@@ -155,45 +157,30 @@ public class SegmentGenerationJobRunner implements IngestionJobRunner {
     }
     _tableConfig = SegmentGenerationUtils.getTableConfig(_spec.getTableSpec().getTableConfigURI(), spec.getAuthToken());
 
+    _consistentPushEnabled = ConsistentDataPushUtils.consistentDataPushEnabled(_tableConfig);
+
     final int jobParallelism = _spec.getSegmentCreationJobParallelism();
     int numThreads = JobUtils.getNumThreads(jobParallelism);
     LOGGER.info("Creating an executor service with {} threads(Job parallelism: {}, available cores: {}.)", numThreads,
         jobParallelism, Runtime.getRuntime().availableProcessors());
     _executorService = Executors.newFixedThreadPool(numThreads);
+
+    // Currently we're only saving the first failure, as fast fail is consistent with
+    // how the distributed batch (Hadoop/Spark) workflows act today.
+    _failure = new AtomicReference<>();
   }
 
   @Override
   public void run()
       throws Exception {
-    //Get list of files to process
-    String[] files = _inputDirFS.listFiles(_inputDirURI, true);
+    // Get list of files to process.
+    List<String> filteredFiles = SegmentGenerationUtils.listMatchedFilesWithRecursiveOption(_inputDirFS, _inputDirURI,
+        _spec.getIncludeFileNamePattern(), _spec.getExcludeFileNamePattern(), _spec.isSearchRecursively());
 
-    //TODO: sort input files based on creation time
-    List<String> filteredFiles = new ArrayList<>();
-    PathMatcher includeFilePathMatcher = null;
-    if (_spec.getIncludeFileNamePattern() != null) {
-      includeFilePathMatcher = FileSystems.getDefault().getPathMatcher(_spec.getIncludeFileNamePattern());
-    }
-    PathMatcher excludeFilePathMatcher = null;
-    if (_spec.getExcludeFileNamePattern() != null) {
-      excludeFilePathMatcher = FileSystems.getDefault().getPathMatcher(_spec.getExcludeFileNamePattern());
+    if (_consistentPushEnabled) {
+      ConsistentDataPushUtils.configureSegmentPostfix(_spec);
     }
 
-    for (String file : files) {
-      if (includeFilePathMatcher != null) {
-        if (!includeFilePathMatcher.matches(Paths.get(file))) {
-          continue;
-        }
-      }
-      if (excludeFilePathMatcher != null) {
-        if (excludeFilePathMatcher.matches(Paths.get(file))) {
-          continue;
-        }
-      }
-      if (!_inputDirFS.isDirectory(new URI(file))) {
-        filteredFiles.add(file);
-      }
-    }
     File localTempDir = new File(FileUtils.getTempDirectory(), "pinot-" + UUID.randomUUID());
     try {
       int numInputFiles = filteredFiles.size();
@@ -222,6 +209,11 @@ public class SegmentGenerationJobRunner implements IngestionJobRunner {
         }
       }
       _segmentCreationTaskCountDownLatch.await();
+
+      if (_failure.get() != null) {
+        _executorService.shutdownNow();
+        throw _failure.get();
+      }
     } finally {
       //clean up
       FileUtils.deleteQuietly(localTempDir);
@@ -231,6 +223,7 @@ public class SegmentGenerationJobRunner implements IngestionJobRunner {
 
   private void submitSegmentGenTask(File localTempDir, URI inputFileURI, int seqId)
       throws Exception {
+
     //create localTempDir for input and output
     File localInputTempDir = new File(localTempDir, "input");
     FileUtils.forceMkdir(localInputTempDir);
@@ -252,6 +245,14 @@ public class SegmentGenerationJobRunner implements IngestionJobRunner {
     taskSpec.setSequenceId(seqId);
     taskSpec.setFailOnEmptySegment(_spec.isFailOnEmptySegment());
     taskSpec.setCustomProperty(BatchConfigProperties.INPUT_DATA_FILE_URI_KEY, inputFileURI.toString());
+
+    // If there's already been a failure, log and skip this file. Do this check right before the
+    // submit to reduce odds of starting a new segment when a failure is recorded right before the
+    // submit.
+    if (_failure.get() != null) {
+      LOGGER.info("Skipping Segment Generation Task for {} due to previous failures", inputFileURI);
+      return;
+    }
 
     LOGGER.info("Submitting one Segment Generation Task for {}", inputFileURI);
     _executorService.submit(() -> {
@@ -280,8 +281,15 @@ public class SegmentGenerationJobRunner implements IngestionJobRunner {
         } else {
           _outputDirFS.copyFromLocalFile(localSegmentTarFile, outputSegmentTarURI);
         }
-      } catch (Exception e) {
-        LOGGER.error("Failed to generate Pinot segment for file - {}", inputFileURI, e);
+      } catch (Throwable e) {
+        String msg = "Failed to generate Pinot segment for file - " + inputFileURI;
+        _failure.compareAndSet(null, new RuntimeException(msg, e));
+
+        // We have to decrement the latch by the number of pending tasks.
+        long count = _segmentCreationTaskCountDownLatch.getCount();
+        for (int i = 0; i < count; i++) {
+          _segmentCreationTaskCountDownLatch.countDown();
+        }
       } finally {
         _segmentCreationTaskCountDownLatch.countDown();
         FileUtils.deleteQuietly(localSegmentDir);

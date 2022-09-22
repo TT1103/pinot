@@ -27,7 +27,7 @@ import org.apache.pinot.common.metrics.ServerGauge;
 import org.apache.pinot.common.metrics.ServerMetrics;
 import org.apache.pinot.segment.local.indexsegment.mutable.MutableSegmentImpl;
 import org.apache.pinot.segment.local.realtime.converter.stats.RealtimeSegmentSegmentCreationDataSource;
-import org.apache.pinot.segment.local.recordtransformer.CompositeTransformer;
+import org.apache.pinot.segment.local.segment.creator.TransformPipeline;
 import org.apache.pinot.segment.local.segment.creator.impl.SegmentIndexCreationDriverImpl;
 import org.apache.pinot.segment.local.segment.readers.PinotSegmentRecordReader;
 import org.apache.pinot.segment.spi.creator.SegmentGeneratorConfig;
@@ -87,7 +87,7 @@ public class RealtimeSegmentConverter {
     // range. We don't want the realtime consumption to stop (if an exception
     // is thrown) and thus the time validity check is explicitly disabled for
     // realtime segment generation
-    genConfig.setSkipTimeValueCheck(true);
+    genConfig.setSegmentTimeValueCheck(false);
     if (_invertedIndexColumns != null && !_invertedIndexColumns.isEmpty()) {
       for (String column : _invertedIndexColumns) {
         genConfig.createInvertedIndexForColumn(column);
@@ -119,7 +119,7 @@ public class RealtimeSegmentConverter {
       recordReader.init(_realtimeSegmentImpl, sortedDocIds);
       RealtimeSegmentSegmentCreationDataSource dataSource =
           new RealtimeSegmentSegmentCreationDataSource(_realtimeSegmentImpl, recordReader);
-      driver.init(genConfig, dataSource, CompositeTransformer.getPassThroughTransformer(), null);
+      driver.init(genConfig, dataSource, TransformPipeline.getPassThroughPipeline());
       driver.build();
     }
 

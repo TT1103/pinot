@@ -29,13 +29,13 @@ import java.util.Set;
 import java.util.TreeMap;
 import java.util.concurrent.ConcurrentHashMap;
 import javax.annotation.Nullable;
-import org.I0Itec.zkclient.IZkChildListener;
-import org.I0Itec.zkclient.IZkDataListener;
 import org.apache.commons.collections.CollectionUtils;
 import org.apache.commons.collections.MapUtils;
 import org.apache.helix.AccessOption;
-import org.apache.helix.ZNRecord;
 import org.apache.helix.store.zk.ZkHelixPropertyStore;
+import org.apache.helix.zookeeper.datamodel.ZNRecord;
+import org.apache.helix.zookeeper.zkclient.IZkChildListener;
+import org.apache.helix.zookeeper.zkclient.IZkDataListener;
 import org.apache.pinot.common.request.Expression;
 import org.apache.pinot.common.utils.SchemaUtils;
 import org.apache.pinot.common.utils.config.TableConfigUtils;
@@ -76,7 +76,7 @@ public class TableCache implements PinotConfigProvider {
   private final Set<SchemaChangeListener> _schemaChangeListeners = new HashSet<>();
 
   private final ZkHelixPropertyStore<ZNRecord> _propertyStore;
-  private final boolean _caseInsensitive;
+  private final boolean _ignoreCase;
 
   private final ZkTableConfigChangeListener _zkTableConfigChangeListener = new ZkTableConfigChangeListener();
   // Key is table name with type suffix, value is table config info
@@ -92,9 +92,9 @@ public class TableCache implements PinotConfigProvider {
   // Key is schema name, value is schema info
   private final Map<String, SchemaInfo> _schemaInfoMap = new ConcurrentHashMap<>();
 
-  public TableCache(ZkHelixPropertyStore<ZNRecord> propertyStore, boolean caseInsensitive) {
+  public TableCache(ZkHelixPropertyStore<ZNRecord> propertyStore, boolean ignoreCase) {
     _propertyStore = propertyStore;
-    _caseInsensitive = caseInsensitive;
+    _ignoreCase = ignoreCase;
 
     synchronized (_zkTableConfigChangeListener) {
       // Subscribe child changes before reading the data to avoid missing changes
@@ -124,14 +124,14 @@ public class TableCache implements PinotConfigProvider {
       }
     }
 
-    LOGGER.info("Initialized TableCache with caseInsensitive: {}", caseInsensitive);
+    LOGGER.info("Initialized TableCache with IgnoreCase: {}", ignoreCase);
   }
 
   /**
    * Returns {@code true} if the TableCache is case-insensitive, {@code false} otherwise.
    */
-  public boolean isCaseInsensitive() {
-    return _caseInsensitive;
+  public boolean isIgnoreCase() {
+    return _ignoreCase;
   }
 
   /**
@@ -140,7 +140,7 @@ public class TableCache implements PinotConfigProvider {
    */
   @Nullable
   public String getActualTableName(String tableName) {
-    if (_caseInsensitive) {
+    if (_ignoreCase) {
       return _tableNameMap.get(tableName.toLowerCase());
     } else {
       return _tableNameMap.get(tableName);
@@ -259,7 +259,7 @@ public class TableCache implements PinotConfigProvider {
       removeSchemaName(tableNameWithType);
     }
 
-    if (_caseInsensitive) {
+    if (_ignoreCase) {
       _tableNameMap.put(tableNameWithType.toLowerCase(), tableNameWithType);
       _tableNameMap.put(rawTableName.toLowerCase(), rawTableName);
     } else {
@@ -274,7 +274,7 @@ public class TableCache implements PinotConfigProvider {
     String rawTableName = TableNameBuilder.extractRawTableName(tableNameWithType);
     _tableConfigInfoMap.remove(tableNameWithType);
     removeSchemaName(tableNameWithType);
-    if (_caseInsensitive) {
+    if (_ignoreCase) {
       _tableNameMap.remove(tableNameWithType.toLowerCase());
       String lowerCaseRawTableName = rawTableName.toLowerCase();
       if (TableNameBuilder.isOfflineTableResource(tableNameWithType)) {
@@ -338,7 +338,7 @@ public class TableCache implements PinotConfigProvider {
     addBuiltInVirtualColumns(schema);
     String schemaName = schema.getSchemaName();
     Map<String, String> columnNameMap = new HashMap<>();
-    if (_caseInsensitive) {
+    if (_ignoreCase) {
       for (String columnName : schema.getColumnNames()) {
         columnNameMap.put(columnName.toLowerCase(), columnName);
       }

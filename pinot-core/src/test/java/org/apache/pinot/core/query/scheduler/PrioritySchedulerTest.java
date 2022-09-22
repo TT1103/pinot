@@ -39,12 +39,10 @@ import java.util.concurrent.atomic.LongAccumulator;
 import javax.annotation.Nullable;
 import org.apache.commons.configuration.PropertiesConfiguration;
 import org.apache.pinot.common.exception.QueryException;
-import org.apache.pinot.common.metrics.PinotMetricUtils;
 import org.apache.pinot.common.metrics.ServerMetrics;
 import org.apache.pinot.common.proto.Server;
 import org.apache.pinot.common.utils.DataTable;
 import org.apache.pinot.common.utils.DataTable.MetadataKey;
-import org.apache.pinot.core.common.datatable.DataTableBuilder;
 import org.apache.pinot.core.common.datatable.DataTableFactory;
 import org.apache.pinot.core.data.manager.InstanceDataManager;
 import org.apache.pinot.core.query.executor.QueryExecutor;
@@ -53,6 +51,7 @@ import org.apache.pinot.core.query.scheduler.resources.PolicyBasedResourceManage
 import org.apache.pinot.core.query.scheduler.resources.ResourceLimitPolicy;
 import org.apache.pinot.core.query.scheduler.resources.ResourceManager;
 import org.apache.pinot.spi.env.PinotConfiguration;
+import org.apache.pinot.spi.metrics.PinotMetricUtils;
 import org.testng.annotations.AfterMethod;
 import org.testng.annotations.Test;
 
@@ -306,7 +305,7 @@ public class PrioritySchedulerTest {
           throw new RuntimeException(e);
         }
       }
-      DataTable result = DataTableBuilder.getEmptyDataTable();
+      DataTable result = DataTableFactory.getEmptyDataTable();
       result.getMetadata().put(MetadataKey.TABLE.getName(), queryRequest.getTableNameWithType());
       if (_useBarrier) {
         try {

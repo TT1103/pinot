@@ -26,7 +26,9 @@ import java.util.Collections;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
-import org.apache.helix.ZNRecord;
+import org.apache.commons.collections.MapUtils;
+import org.apache.helix.zookeeper.datamodel.ZNRecord;
+import org.apache.pinot.spi.config.table.DedupConfig;
 import org.apache.pinot.spi.config.table.FieldConfig;
 import org.apache.pinot.spi.config.table.IndexingConfig;
 import org.apache.pinot.spi.config.table.QueryConfig;
@@ -130,6 +132,12 @@ public class TableConfigUtils {
       upsertConfig = JsonUtils.stringToObject(upsertConfigString, UpsertConfig.class);
     }
 
+    DedupConfig dedupConfig = null;
+    String dedupConfigString = simpleFields.get(TableConfig.DEDUP_CONFIG_KEY);
+    if (dedupConfigString != null) {
+      dedupConfig = JsonUtils.stringToObject(dedupConfigString, DedupConfig.class);
+    }
+
     IngestionConfig ingestionConfig = null;
     String ingestionConfigString = simpleFields.get(TableConfig.INGESTION_CONFIG_KEY);
     if (ingestionConfigString != null) {
@@ -150,9 +158,16 @@ public class TableConfigUtils {
       });
     }
 
+    Map<InstancePartitionsType, String> instancePartitionsMap = null;
+    String instancePartitionsMapString = simpleFields.get(TableConfig.INSTANCE_PARTITIONS_MAP_CONFIG_KEY);
+    if (instancePartitionsMapString != null) {
+      instancePartitionsMap = JsonUtils.stringToObject(instancePartitionsMapString,
+          new TypeReference<Map<InstancePartitionsType, String>>() { });
+    }
+
     return new TableConfig(tableName, tableType, validationConfig, tenantConfig, indexingConfig, customConfig,
         quotaConfig, taskConfig, routingConfig, queryConfig, instanceAssignmentConfigMap, fieldConfigList, upsertConfig,
-        ingestionConfig, tierConfigList, isDimTable, tunerConfigList);
+        dedupConfig, ingestionConfig, tierConfigList, isDimTable, tunerConfigList, instancePartitionsMap);
   }
 
   public static ZNRecord toZNRecord(TableConfig tableConfig)
@@ -199,6 +214,10 @@ public class TableConfigUtils {
     if (upsertConfig != null) {
       simpleFields.put(TableConfig.UPSERT_CONFIG_KEY, JsonUtils.objectToString(upsertConfig));
     }
+    DedupConfig dedupConfig = tableConfig.getDedupConfig();
+    if (dedupConfig != null) {
+      simpleFields.put(TableConfig.DEDUP_CONFIG_KEY, JsonUtils.objectToString(dedupConfig));
+    }
     IngestionConfig ingestionConfig = tableConfig.getIngestionConfig();
     if (ingestionConfig != null) {
       simpleFields.put(TableConfig.INGESTION_CONFIG_KEY, JsonUtils.objectToString(ingestionConfig));
@@ -211,6 +230,10 @@ public class TableConfigUtils {
     if (tunerConfigList != null) {
       simpleFields.put(TableConfig.TUNER_CONFIG_LIST_KEY, JsonUtils.objectToString(tunerConfigList));
     }
+    if (tableConfig.getInstancePartitionsMap() != null) {
+      simpleFields.put(TableConfig.INSTANCE_PARTITIONS_MAP_CONFIG_KEY,
+          JsonUtils.objectToString(tableConfig.getInstancePartitionsMap()));
+    }
 
     ZNRecord znRecord = new ZNRecord(tableConfig.getTableName());
     znRecord.setSimpleFields(simpleFields);
@@ -218,8 +241,7 @@ public class TableConfigUtils {
   }
 
   /**
-   * Helper method to convert from legacy/deprecated configs into current version
-   * of TableConfig.
+   * Helper method to convert from legacy/deprecated configs into current version of TableConfig.
    * <ul>
    *   <li>Moves deprecated ingestion related configs into Ingestion Config.</li>
    *   <li>The conversion happens in-place, the specified tableConfig is mutated in-place.</li>
@@ -247,7 +269,6 @@ public class TableConfigUtils {
       if (batchIngestionConfig.getSegmentIngestionType() == null) {
         batchIngestionConfig.setSegmentIngestionType(segmentPushType);
       }
-
       if (batchIngestionConfig.getSegmentIngestionFrequency() == null) {
         batchIngestionConfig.setSegmentIngestionFrequency(segmentPushFrequency);
       }
@@ -258,36 +279,46 @@ public class TableConfigUtils {
     IndexingConfig indexingConfig = tableConfig.getIndexingConfig();
 
     if (streamIngestionConfig == null) {
-      Map<String, String> streamConfigs = indexingConfig.getStreamConfigs();
-
       // Only set the new config if the deprecated one is set.
-      if (streamConfigs != null && !streamConfigs.isEmpty()) {
+      Map<String, String> streamConfigs = indexingConfig.getStreamConfigs();
+      if (MapUtils.isNotEmpty(streamConfigs)) {
         streamIngestionConfig = new StreamIngestionConfig(Collections.singletonList(streamConfigs));
       }
     }
 
     if (ingestionConfig == null) {
       if (batchIngestionConfig != null || streamIngestionConfig != null) {
-        ingestionConfig = new IngestionConfig(batchIngestionConfig, streamIngestionConfig, null, null, null, null);
-      }
-    } else {
-      if (batchIngestionConfig != null) {
+        ingestionConfig = new IngestionConfig();
         ingestionConfig.setBatchIngestionConfig(batchIngestionConfig);
-      }
-
-      if (streamIngestionConfig != null) {
         ingestionConfig.setStreamIngestionConfig(streamIngestionConfig);
       }
+    } else {
+      ingestionConfig.setBatchIngestionConfig(batchIngestionConfig);
+      ingestionConfig.setStreamIngestionConfig(streamIngestionConfig);
     }
 
     // Set the new config fields.
-    if (ingestionConfig != null) {
-      tableConfig.setIngestionConfig(ingestionConfig);
-    }
+    tableConfig.setIngestionConfig(ingestionConfig);
 
     // Clear the deprecated ones.
     indexingConfig.setStreamConfigs(null);
     validationConfig.setSegmentPushFrequency(null);
     validationConfig.setSegmentPushType(null);
+  }
+
+  /**
+   * Returns true if the table has pre-configured instance partitions for any type (OFFLINE/CONSUMING/COMPLETED).
+   */
+  public static boolean hasPreConfiguredInstancePartitions(TableConfig tableConfig) {
+    return MapUtils.isNotEmpty(tableConfig.getInstancePartitionsMap());
+  }
+
+  /**
+   * Returns true if the table has pre-configured instance partitions for the given type.
+   */
+  public static boolean hasPreConfiguredInstancePartitions(TableConfig tableConfig,
+      InstancePartitionsType instancePartitionsType) {
+    return hasPreConfiguredInstancePartitions(tableConfig)
+        && tableConfig.getInstancePartitionsMap().containsKey(instancePartitionsType);
   }
 }

@@ -128,7 +128,7 @@ public class DataTableImplV3 extends BaseDataTable {
       byteBuffer.position(dataSchemaStart);
       _dataSchema = DataSchema.fromBytes(byteBuffer);
       _columnOffsets = new int[_dataSchema.size()];
-      _rowSizeInBytes = DataTableUtils.computeColumnOffsets(_dataSchema, _columnOffsets);
+      _rowSizeInBytes = DataTableUtils.computeColumnOffsets(_dataSchema, _columnOffsets, getVersion());
     } else {
       _dataSchema = null;
       _columnOffsets = null;
@@ -162,6 +162,11 @@ public class DataTableImplV3 extends BaseDataTable {
     if (metadataLength != 0) {
       _metadata = deserializeMetadata(byteBuffer);
     }
+  }
+
+  @Override
+  public int getVersion() {
+    return DataTableFactory.VERSION_3;
   }
 
   @Override
@@ -219,7 +224,7 @@ public class DataTableImplV3 extends BaseDataTable {
 
   private void writeLeadingSections(DataOutputStream dataOutputStream)
       throws IOException {
-    dataOutputStream.writeInt(DataTableBuilder.VERSION_3);
+    dataOutputStream.writeInt(DataTableFactory.VERSION_3);
     dataOutputStream.writeInt(_numRows);
     dataOutputStream.writeInt(_numColumns);
     int dataOffset = HEADER_SIZE;
@@ -317,7 +322,7 @@ public class DataTableImplV3 extends BaseDataTable {
         continue;
       }
       String value = entry.getValue();
-      dataOutputStream.writeInt(key.ordinal());
+      dataOutputStream.writeInt(key.getId());
       if (key.getValueType() == MetadataValueType.INT) {
         dataOutputStream.write(Ints.toByteArray(Integer.parseInt(value)));
       } else if (key.getValueType() == MetadataValueType.LONG) {
@@ -348,7 +353,7 @@ public class DataTableImplV3 extends BaseDataTable {
     Map<String, String> metadata = new HashMap<>();
     for (int i = 0; i < numEntries; i++) {
       int keyId = buffer.getInt();
-      MetadataKey key = MetadataKey.getByOrdinal(keyId);
+      MetadataKey key = MetadataKey.getById(keyId);
       // Ignore unknown keys.
       if (key == null) {
         continue;

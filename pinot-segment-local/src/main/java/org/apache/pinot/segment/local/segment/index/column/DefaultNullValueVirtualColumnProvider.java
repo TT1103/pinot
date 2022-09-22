@@ -18,6 +18,8 @@
  */
 package org.apache.pinot.segment.local.segment.index.column;
 
+import java.math.BigDecimal;
+import org.apache.pinot.segment.local.segment.index.readers.ConstantValueBigDecimalDictionary;
 import org.apache.pinot.segment.local.segment.index.readers.ConstantValueBytesDictionary;
 import org.apache.pinot.segment.local.segment.index.readers.ConstantValueDoubleDictionary;
 import org.apache.pinot.segment.local.segment.index.readers.ConstantValueFloatDictionary;
@@ -61,6 +63,8 @@ public class DefaultNullValueVirtualColumnProvider extends BaseVirtualColumnProv
         return new ConstantValueFloatDictionary((float) fieldSpec.getDefaultNullValue());
       case DOUBLE:
         return new ConstantValueDoubleDictionary((double) fieldSpec.getDefaultNullValue());
+      case BIG_DECIMAL:
+        return new ConstantValueBigDecimalDictionary((BigDecimal) fieldSpec.getDefaultNullValue());
       case STRING:
         return new ConstantValueStringDictionary((String) fieldSpec.getDefaultNullValue());
       case BYTES:
@@ -81,7 +85,15 @@ public class DefaultNullValueVirtualColumnProvider extends BaseVirtualColumnProv
 
   @Override
   public ColumnMetadataImpl buildMetadata(VirtualColumnContext context) {
-    return getColumnMetadataBuilder(context).setCardinality(1).setSorted(context.getFieldSpec().isSingleValueField())
-        .setHasDictionary(true).build();
+    ColumnMetadataImpl.Builder builder = getColumnMetadataBuilder(context).setCardinality(1).setHasDictionary(true);
+    if (context.getFieldSpec().isSingleValueField()) {
+      builder.setSorted(true);
+    } else {
+      // When there is no value for a multi-value column, the maxNumberOfMultiValues and cardinality should be
+      // set as 1 because the MV column bitmap uses 1 to delimit the rows for a MV column. Each MV column will have a
+      // default null value based on column's data type
+      builder.setMaxNumberOfMultiValues(1);
+    }
+    return builder.build();
   }
 }

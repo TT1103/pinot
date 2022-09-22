@@ -18,18 +18,20 @@
  */
 package org.apache.pinot.controller.helix;
 
+import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.Lists;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
+import java.util.Map;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
 import org.apache.helix.AccessOption;
-import org.apache.helix.ZNRecord;
 import org.apache.helix.model.ExternalView;
 import org.apache.helix.model.IdealState;
 import org.apache.helix.store.zk.ZkHelixPropertyStore;
+import org.apache.helix.zookeeper.datamodel.ZNRecord;
 import org.apache.pinot.common.lineage.LineageEntry;
 import org.apache.pinot.common.lineage.LineageEntryState;
 import org.apache.pinot.common.lineage.SegmentLineage;
@@ -37,22 +39,22 @@ import org.apache.pinot.common.lineage.SegmentLineageUtils;
 import org.apache.pinot.common.metadata.segment.SegmentZKMetadata;
 import org.apache.pinot.common.metrics.ControllerGauge;
 import org.apache.pinot.common.metrics.ControllerMetrics;
-import org.apache.pinot.common.metrics.PinotMetricUtils;
 import org.apache.pinot.common.utils.LLCSegmentName;
 import org.apache.pinot.controller.ControllerConf;
 import org.apache.pinot.controller.LeadControllerManager;
 import org.apache.pinot.controller.helix.core.PinotHelixResourceManager;
 import org.apache.pinot.controller.util.TableSizeReader;
+import org.apache.pinot.spi.config.table.TableConfig;
+import org.apache.pinot.spi.config.table.TableType;
+import org.apache.pinot.spi.metrics.PinotMetricUtils;
 import org.apache.pinot.spi.metrics.PinotMetricsRegistry;
 import org.apache.pinot.spi.utils.CommonConstants;
+import org.apache.pinot.spi.utils.builder.TableConfigBuilder;
 import org.apache.pinot.spi.utils.builder.TableNameBuilder;
 import org.testng.Assert;
 import org.testng.annotations.Test;
 
-import static org.mockito.ArgumentMatchers.any;
-import static org.mockito.ArgumentMatchers.anyInt;
-import static org.mockito.ArgumentMatchers.anyString;
-import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.ArgumentMatchers.*;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
 
@@ -74,6 +76,9 @@ public class SegmentStatusCheckerTest {
     final String tableName = "myTable_OFFLINE";
     List<String> allTableNames = new ArrayList<String>();
     allTableNames.add(tableName);
+    TableConfig tableConfig =
+        new TableConfigBuilder(TableType.OFFLINE).setTableName(tableName).setNumReplicas(2).build();
+
     IdealState idealState = new IdealState(tableName);
     idealState.setPartitionState("myTable_0", "pinot1", "ONLINE");
     idealState.setPartitionState("myTable_0", "pinot2", "ONLINE");
@@ -105,6 +110,7 @@ public class SegmentStatusCheckerTest {
     {
       _helixResourceManager = mock(PinotHelixResourceManager.class);
       when(_helixResourceManager.getAllTables()).thenReturn(allTableNames);
+      when(_helixResourceManager.getTableConfig(tableName)).thenReturn(tableConfig);
       when(_helixResourceManager.getTableIdealState(tableName)).thenReturn(idealState);
       when(_helixResourceManager.getTableExternalView(tableName)).thenReturn(externalView);
     }
@@ -144,6 +150,7 @@ public class SegmentStatusCheckerTest {
     _segmentStatusChecker.setTableSizeReader(_tableSizeReader);
     _segmentStatusChecker.start();
     _segmentStatusChecker.run();
+    Assert.assertEquals(_controllerMetrics.getValueOfTableGauge(tableName, ControllerGauge.REPLICATION_FROM_CONFIG), 2);
     Assert
         .assertEquals(_controllerMetrics.getValueOfTableGauge(externalView.getId(), ControllerGauge.SEGMENT_COUNT), 3);
     Assert.assertEquals(
@@ -171,6 +178,9 @@ public class SegmentStatusCheckerTest {
     final String rawTableName = TableNameBuilder.extractRawTableName(tableName);
     List<String> allTableNames = new ArrayList<String>();
     allTableNames.add(tableName);
+    TableConfig tableConfig =
+        new TableConfigBuilder(TableType.REALTIME).setTableName(tableName).setTimeColumnName("timeColumn").setLLC(true)
+            .setNumReplicas(3).setStreamConfigs(getStreamConfigMap()).build();
     final LLCSegmentName seg1 = new LLCSegmentName(rawTableName, 1, 0, System.currentTimeMillis());
     final LLCSegmentName seg2 = new LLCSegmentName(rawTableName, 1, 1, System.currentTimeMillis());
     final LLCSegmentName seg3 = new LLCSegmentName(rawTableName, 2, 1, System.currentTimeMillis());
@@ -201,10 +211,14 @@ public class SegmentStatusCheckerTest {
     {
       _helixResourceManager = mock(PinotHelixResourceManager.class);
       _helixPropertyStore = mock(ZkHelixPropertyStore.class);
+      when(_helixResourceManager.getTableConfig(tableName)).thenReturn(tableConfig);
       when(_helixResourceManager.getPropertyStore()).thenReturn(_helixPropertyStore);
       when(_helixResourceManager.getAllTables()).thenReturn(allTableNames);
       when(_helixResourceManager.getTableIdealState(tableName)).thenReturn(idealState);
       when(_helixResourceManager.getTableExternalView(tableName)).thenReturn(externalView);
+      ZNRecord znRecord = new ZNRecord("0");
+      znRecord.setSimpleField(CommonConstants.Segment.Realtime.END_OFFSET, "10000");
+      when(_helixPropertyStore.get(anyString(), any(), anyInt())).thenReturn(znRecord);
     }
     {
       _config = mock(ControllerConf.class);
@@ -227,6 +241,7 @@ public class SegmentStatusCheckerTest {
     _segmentStatusChecker.setTableSizeReader(_tableSizeReader);
     _segmentStatusChecker.start();
     _segmentStatusChecker.run();
+    Assert.assertEquals(_controllerMetrics.getValueOfTableGauge(tableName, ControllerGauge.REPLICATION_FROM_CONFIG), 3);
     Assert.assertEquals(
         _controllerMetrics.getValueOfTableGauge(externalView.getId(), ControllerGauge.SEGMENTS_IN_ERROR_STATE), 0);
     Assert
@@ -238,6 +253,18 @@ public class SegmentStatusCheckerTest {
             100);
     Assert.assertEquals(
         _controllerMetrics.getValueOfTableGauge(externalView.getId(), ControllerGauge.PERCENT_SEGMENTS_AVAILABLE), 100);
+    Assert.assertEquals(_controllerMetrics
+        .getValueOfTableGauge(externalView.getId(), ControllerGauge.MISSING_CONSUMING_SEGMENT_TOTAL_COUNT), 2);
+  }
+
+  Map<String, String> getStreamConfigMap() {
+    return ImmutableMap.of(
+        "streamType", "kafka",
+        "stream.kafka.consumer.type", "simple",
+        "stream.kafka.topic.name", "test",
+        "stream.kafka.decoder.class.name", "org.apache.pinot.plugin.stream.kafka.KafkaAvroMessageDecoder",
+        "stream.kafka.consumer.factory.class.name",
+        "org.apache.pinot.core.realtime.impl.fakestream.FakeStreamConsumerFactory");
   }
 
   @Test

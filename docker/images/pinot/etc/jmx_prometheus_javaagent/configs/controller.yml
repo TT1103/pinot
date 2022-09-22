@@ -20,6 +20,12 @@ rules:
   labels:
     table: "$1"
     tableType: "$2"
+- pattern: "\"org.apache.pinot.common.metrics\"<type=\"ControllerMetrics\", name=\"pinot.controller.replicationFromConfig.(\\w+)_(\\w+)\"><>(\\w+)"
+  name: "pinot_controller_replicationFromConfig_$3"
+  cache: true
+  labels:
+    table: "$1"
+    tableType: "$2"
 - pattern: "\"org.apache.pinot.common.metrics\"<type=\"ControllerMetrics\", name=\"pinot.controller.numberOfReplicas.(\\w+)_(\\w+)\"><>(\\w+)"
   name: "pinot_controller_numberOfReplicas_$3"
   cache: true
@@ -68,6 +74,9 @@ rules:
 - pattern: "\"org.apache.pinot.common.metrics\"<type=\"ControllerMetrics\", name=\"pinot.controller.realtimeTableCount\"><>(\\w+)"
   name: "pinot_controller_realtimeTableCount_$1"
   cache: true
+- pattern: "\"org.apache.pinot.common.metrics\"<type=\"ControllerMetrics\", name=\"pinot.controller.offlineTableCount\"><>(\\w+)"
+  name: "pinot_controller_offlineTableCount_$1"
+  cache: true
 - pattern: "\"org.apache.pinot.common.metrics\"<type=\"ValidationMetrics\", name=\"pinot.controller.(\\w+)\\.(\\w+)\"><>(\\w+)"
   name: "pinot_controller_validateion_$2_$3"
   cache: true
@@ -81,6 +90,12 @@ rules:
     taskType: "$2"
 - pattern: "\"org.apache.pinot.common.metrics\"<type=\"ControllerMetrics\", name=\"pinot.controller.(\\w+)\\.(\\w+).cronSchedulerTriggered\"><>(\\w+)"
   name: "pinot_controller_cronSchedulerTriggered_$3"
+  cache: true
+  labels:
+    table: "$1"
+    taskType: "$2"
+- pattern: "\"org.apache.pinot.common.metrics\"<type=\"ControllerMetrics\", name=\"pinot.controller.(\\w+)\\.(\\w+).cronSchedulerSkipped\"><>(\\w+)"
+  name: "pinot_controller_cronSchedulerSkipped_$3"
   cache: true
   labels:
     table: "$1"
@@ -111,6 +126,13 @@ rules:
   labels:
     table: "$1"
     tableType: "$2"
+- pattern: "\"org.apache.pinot.common.metrics\"<type=\"ControllerMetrics\", name=\"pinot.controller.(\\w+)_(\\w+).(\\w+).periodicTaskError\"><>(\\w+)"
+  name: "pinot_controller_periodicTaskError_$4"
+  cache: true
+  labels:
+    table: "$1"
+    tableType: "$2"
+    periodicTask: "$3"
 - pattern: "\"org.apache.pinot.common.metrics\"<type=\"ControllerMetrics\", name=\"pinot.controller.tableStorageQuotaUtilization.(\\w+)_(\\w+)\"><>(\\w+)"
   name: "pinot_controller_tableStorageQuotaUtilization_$3"
   cache: true

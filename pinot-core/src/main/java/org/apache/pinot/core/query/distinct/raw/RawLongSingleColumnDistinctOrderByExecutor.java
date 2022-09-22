@@ -26,6 +26,7 @@ import org.apache.pinot.core.common.BlockValSet;
 import org.apache.pinot.core.operator.blocks.TransformBlock;
 import org.apache.pinot.core.query.distinct.DistinctExecutor;
 import org.apache.pinot.spi.data.FieldSpec.DataType;
+import org.roaringbitmap.RoaringBitmap;
 
 
 /**
@@ -35,8 +36,8 @@ public class RawLongSingleColumnDistinctOrderByExecutor extends BaseRawLongSingl
   private final LongPriorityQueue _priorityQueue;
 
   public RawLongSingleColumnDistinctOrderByExecutor(ExpressionContext expression, DataType dataType,
-      OrderByExpressionContext orderByExpression, int limit) {
-    super(expression, dataType, limit);
+      OrderByExpressionContext orderByExpression, int limit, boolean nullHandlingEnabled) {
+    super(expression, dataType, limit, nullHandlingEnabled);
 
     assert orderByExpression.getExpression().equals(expression);
     int comparisonFactor = orderByExpression.isAsc() ? -1 : 1;
@@ -47,25 +48,48 @@ public class RawLongSingleColumnDistinctOrderByExecutor extends BaseRawLongSingl
   @Override
   public boolean process(TransformBlock transformBlock) {
     BlockValSet blockValueSet = transformBlock.getBlockValueSet(_expression);
-    long[] values = blockValueSet.getLongValuesSV();
     int numDocs = transformBlock.getNumDocs();
-    for (int i = 0; i < numDocs; i++) {
-      long value = values[i];
-      if (!_valueSet.contains(value)) {
-        if (_valueSet.size() < _limit) {
-          _valueSet.add(value);
-          _priorityQueue.enqueue(value);
-        } else {
-          long firstValue = _priorityQueue.firstLong();
-          if (_priorityQueue.comparator().compare(value, firstValue) > 0) {
-            _valueSet.remove(firstValue);
-            _valueSet.add(value);
-            _priorityQueue.dequeueLong();
-            _priorityQueue.enqueue(value);
+    if (blockValueSet.isSingleValue()) {
+      long[] values = blockValueSet.getLongValuesSV();
+      if (_nullHandlingEnabled) {
+        RoaringBitmap nullBitmap = blockValueSet.getNullBitmap();
+        for (int i = 0; i < numDocs; i++) {
+          if (nullBitmap != null && nullBitmap.contains(i)) {
+            _hasNull = true;
+          } else {
+            add(values[i]);
           }
+        }
+      } else {
+        for (int i = 0; i < numDocs; i++) {
+          add(values[i]);
+        }
+      }
+    } else {
+      long[][] values = blockValueSet.getLongValuesMV();
+      for (int i = 0; i < numDocs; i++) {
+        for (long value : values[i]) {
+          add(value);
         }
       }
     }
     return false;
+  }
+
+  private void add(long value) {
+    if (!_valueSet.contains(value)) {
+      if (_valueSet.size() < _limit - (_hasNull ? 1 : 0)) {
+        _valueSet.add(value);
+        _priorityQueue.enqueue(value);
+      } else {
+        long firstValue = _priorityQueue.firstLong();
+        if (_priorityQueue.comparator().compare(value, firstValue) > 0) {
+          _valueSet.remove(firstValue);
+          _valueSet.add(value);
+          _priorityQueue.dequeueLong();
+          _priorityQueue.enqueue(value);
+        }
+      }
+    }
   }
 }

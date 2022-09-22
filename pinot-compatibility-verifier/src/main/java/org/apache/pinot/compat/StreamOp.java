@@ -222,12 +222,11 @@ public class StreamOp extends BaseOp {
 
       String timeColumn = tableConfig.getValidationConfig().getTimeColumnName();
       String schemaName = TableNameBuilder.extractRawTableName(tableName);
-      String schemaString = ControllerTest.
-          sendGetRequest(ControllerRequestURLBuilder.baseUrl(ClusterDescriptor.getInstance().getControllerUrl())
+      String schemaString = ControllerTest
+          .sendGetRequest(ControllerRequestURLBuilder.baseUrl(ClusterDescriptor.getInstance().getControllerUrl())
               .forSchemaGet(schemaName));
       Schema schema = JsonUtils.stringToObject(schemaString, Schema.class);
-      DateTimeFormatSpec dateTimeFormatSpec =
-          new DateTimeFormatSpec(schema.getSpecForTimeColumn(timeColumn).getFormat());
+      DateTimeFormatSpec dateTimeFormatSpec = schema.getSpecForTimeColumn(timeColumn).getFormatSpec();
 
       try (RecordReader csvRecordReader = RecordReaderFactory
           .getRecordReader(FileFormat.CSV, localReplacedCSVFile, columnNames, recordReaderConfig)) {

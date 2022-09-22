@@ -22,13 +22,16 @@ import com.google.common.annotations.VisibleForTesting;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Properties;
 import java.util.Set;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.TimeUnit;
 import org.apache.commons.httpclient.MultiThreadedHttpConnectionManager;
-import org.apache.helix.manager.zk.ZNRecordSerializer;
 import org.apache.helix.model.ExternalView;
 import org.apache.helix.model.IdealState;
+import org.apache.helix.store.zk.ZkHelixPropertyStore;
+import org.apache.helix.zookeeper.datamodel.ZNRecord;
+import org.apache.helix.zookeeper.datamodel.serializer.ZNRecordSerializer;
 import org.apache.pinot.common.exception.InvalidConfigException;
 import org.apache.pinot.common.lineage.SegmentLineage;
 import org.apache.pinot.common.lineage.SegmentLineageAccessHelper;
@@ -40,8 +43,12 @@ import org.apache.pinot.controller.ControllerConf;
 import org.apache.pinot.controller.LeadControllerManager;
 import org.apache.pinot.controller.helix.core.PinotHelixResourceManager;
 import org.apache.pinot.controller.helix.core.periodictask.ControllerPeriodicTask;
+import org.apache.pinot.controller.helix.core.realtime.MissingConsumingSegmentFinder;
 import org.apache.pinot.controller.util.TableSizeReader;
+import org.apache.pinot.spi.config.table.TableConfig;
 import org.apache.pinot.spi.config.table.TableType;
+import org.apache.pinot.spi.stream.PartitionLevelStreamConfig;
+import org.apache.pinot.spi.utils.IngestionConfigUtils;
 import org.apache.pinot.spi.utils.builder.TableNameBuilder;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -94,7 +101,7 @@ public class SegmentStatusChecker extends ControllerPeriodicTask<SegmentStatusCh
   }
 
   @Override
-  protected Context preprocess() {
+  protected Context preprocess(Properties periodicTaskProperties) {
     Context context = new Context();
     // check if we need to log disabled tables log messages
     long now = System.currentTimeMillis();
@@ -108,7 +115,9 @@ public class SegmentStatusChecker extends ControllerPeriodicTask<SegmentStatusCh
   @Override
   protected void processTable(String tableNameWithType, Context context) {
     try {
-      updateSegmentMetrics(tableNameWithType, context);
+      TableConfig tableConfig = _pinotHelixResourceManager.getTableConfig(tableNameWithType);
+      updateTableConfigMetrics(tableNameWithType, tableConfig);
+      updateSegmentMetrics(tableNameWithType, tableConfig, context);
       updateTableSizeMetrics(tableNameWithType);
     } catch (Exception e) {
       LOGGER.error("Caught exception while updating segment status for table {}", tableNameWithType, e);
@@ -124,6 +133,25 @@ public class SegmentStatusChecker extends ControllerPeriodicTask<SegmentStatusCh
     _controllerMetrics.setValueOfGlobalGauge(ControllerGauge.DISABLED_TABLE_COUNT, context._disabledTableCount);
   }
 
+  /**
+   * Updates metrics related to the table config.
+   * If table config not found, resets the metrics
+   */
+  private void updateTableConfigMetrics(String tableNameWithType, TableConfig tableConfig) {
+    if (tableConfig == null) {
+      LOGGER.warn("Found null table config for table: {}. Resetting table config metrics.", tableNameWithType);
+      _controllerMetrics.setValueOfTableGauge(tableNameWithType, ControllerGauge.REPLICATION_FROM_CONFIG, 0);
+      return;
+    }
+    int replication;
+    if (tableConfig.getTableType() == TableType.REALTIME) {
+      replication = tableConfig.getValidationConfig().getReplicasPerPartitionNumber();
+    } else {
+      replication = tableConfig.getValidationConfig().getReplicationNumber();
+    }
+    _controllerMetrics.setValueOfTableGauge(tableNameWithType, ControllerGauge.REPLICATION_FROM_CONFIG, replication);
+  }
+
   private void updateTableSizeMetrics(String tableNameWithType)
       throws InvalidConfigException {
     _tableSizeReader.getTableSizeDetails(tableNameWithType, TABLE_CHECKER_TIMEOUT_MS);
@@ -133,8 +161,9 @@ public class SegmentStatusChecker extends ControllerPeriodicTask<SegmentStatusCh
    * Runs a segment status pass over the given table.
    * TODO: revisit the logic and reduce the ZK access
    */
-  private void updateSegmentMetrics(String tableNameWithType, Context context) {
-    if (TableNameBuilder.getTableTypeFromTableName(tableNameWithType) == TableType.OFFLINE) {
+  private void updateSegmentMetrics(String tableNameWithType, TableConfig tableConfig, Context context) {
+    TableType tableType = TableNameBuilder.getTableTypeFromTableName(tableNameWithType);
+    if (tableType == TableType.OFFLINE) {
       context._offlineTableCount++;
     } else {
       context._realTimeTableCount++;
@@ -174,8 +203,8 @@ public class SegmentStatusChecker extends ControllerPeriodicTask<SegmentStatusCh
     // Get the segments excluding the replaced segments which are specified in the segment lineage entries and cannot
     // be queried from the table.
     Set<String> segmentsExcludeReplaced = new HashSet<>(idealState.getPartitionSet());
-    SegmentLineage segmentLineage =
-        SegmentLineageAccessHelper.getSegmentLineage(_pinotHelixResourceManager.getPropertyStore(), tableNameWithType);
+    ZkHelixPropertyStore<ZNRecord> propertyStore = _pinotHelixResourceManager.getPropertyStore();
+    SegmentLineage segmentLineage = SegmentLineageAccessHelper.getSegmentLineage(propertyStore, tableNameWithType);
     SegmentLineageUtils.filterSegmentsBasedOnLineageInPlace(segmentsExcludeReplaced, segmentLineage);
     _controllerMetrics
         .setValueOfTableGauge(tableNameWithType, ControllerGauge.IDEALSTATE_ZNODE_SIZE, idealState.toString().length());
@@ -275,6 +304,13 @@ public class SegmentStatusChecker extends ControllerPeriodicTask<SegmentStatusCh
     if (nReplicasExternal < nReplicasIdealMax) {
       LOGGER.warn("Table {} has {} replicas, below replication threshold :{}", tableNameWithType, nReplicasExternal,
           nReplicasIdealMax);
+    }
+
+    if (tableType == TableType.REALTIME && tableConfig != null) {
+      PartitionLevelStreamConfig streamConfig = new PartitionLevelStreamConfig(tableConfig.getTableName(),
+          IngestionConfigUtils.getStreamConfigMap(tableConfig));
+      new MissingConsumingSegmentFinder(tableNameWithType, propertyStore, _controllerMetrics, streamConfig)
+          .findAndEmitMetrics(idealState);
     }
   }
 

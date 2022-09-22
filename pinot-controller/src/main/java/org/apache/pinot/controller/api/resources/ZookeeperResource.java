@@ -19,12 +19,21 @@
 package org.apache.pinot.controller.api.resources;
 
 import com.fasterxml.jackson.core.JsonProcessingException;
+import com.fasterxml.jackson.core.type.TypeReference;
+import com.fasterxml.jackson.databind.DeserializationFeature;
+import com.fasterxml.jackson.databind.MapperFeature;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.databind.SerializationFeature;
 import com.google.common.annotations.VisibleForTesting;
 import io.swagger.annotations.Api;
+import io.swagger.annotations.ApiKeyAuthDefinition;
 import io.swagger.annotations.ApiOperation;
 import io.swagger.annotations.ApiParam;
 import io.swagger.annotations.ApiResponse;
 import io.swagger.annotations.ApiResponses;
+import io.swagger.annotations.Authorization;
+import io.swagger.annotations.SecurityDefinition;
+import io.swagger.annotations.SwaggerDefinition;
 import java.io.IOException;
 import java.util.ArrayList;
 import java.util.List;
@@ -39,40 +48,43 @@ import javax.ws.rs.PUT;
 import javax.ws.rs.Path;
 import javax.ws.rs.Produces;
 import javax.ws.rs.QueryParam;
+import javax.ws.rs.core.HttpHeaders;
 import javax.ws.rs.core.MediaType;
 import javax.ws.rs.core.Response;
 import org.apache.commons.lang.StringUtils;
-import org.apache.helix.ZNRecord;
+import org.apache.helix.zookeeper.datamodel.ZNRecord;
+import org.apache.helix.zookeeper.introspect.CodehausJacksonIntrospector;
 import org.apache.pinot.controller.api.access.AccessType;
 import org.apache.pinot.controller.api.access.Authenticate;
 import org.apache.pinot.controller.api.exception.ControllerApplicationException;
 import org.apache.pinot.controller.helix.core.PinotHelixResourceManager;
 import org.apache.pinot.spi.utils.JsonUtils;
 import org.apache.zookeeper.data.Stat;
-import org.codehaus.jackson.map.DeserializationConfig;
-import org.codehaus.jackson.map.ObjectMapper;
-import org.codehaus.jackson.map.SerializationConfig;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import static org.apache.pinot.spi.utils.CommonConstants.SWAGGER_AUTHORIZATION_KEY;
 
-@Api(tags = Constants.ZOOKEEPER)
+
+@Api(tags = Constants.ZOOKEEPER, authorizations = {@Authorization(value = SWAGGER_AUTHORIZATION_KEY)})
+@SwaggerDefinition(securityDefinition = @SecurityDefinition(apiKeyAuthDefinitions = @ApiKeyAuthDefinition(name =
+    HttpHeaders.AUTHORIZATION, in = ApiKeyAuthDefinition.ApiKeyLocation.HEADER, key = SWAGGER_AUTHORIZATION_KEY)))
 @Path("/")
 public class ZookeeperResource {
   private static final Logger LOGGER = LoggerFactory.getLogger(ZookeeperResource.class);
 
   // Helix uses codehaus.jackson.map.ObjectMapper, hence we can't use pinot JsonUtils here.
   @VisibleForTesting
-  static final ObjectMapper MAPPER = new ObjectMapper();
+  static final ObjectMapper MAPPER = (new ObjectMapper()).setAnnotationIntrospector(new CodehausJacksonIntrospector());
 
   static {
-    // Configuration should be identical to org.apache.helix.manager.zk.ZNRecordSerializer.
-    MAPPER.configure(SerializationConfig.Feature.INDENT_OUTPUT, true);
-    MAPPER.configure(SerializationConfig.Feature.AUTO_DETECT_FIELDS, true);
-    MAPPER.configure(SerializationConfig.Feature.CAN_OVERRIDE_ACCESS_MODIFIERS, true);
-    MAPPER.configure(DeserializationConfig.Feature.AUTO_DETECT_FIELDS, true);
-    MAPPER.configure(DeserializationConfig.Feature.AUTO_DETECT_SETTERS, true);
-    MAPPER.configure(DeserializationConfig.Feature.FAIL_ON_UNKNOWN_PROPERTIES, true);
+    // Configuration should be identical to org.apache.helix.zookeeper.datamodel.serializer.ZNRecordSerializer.
+
+    MAPPER.enable(SerializationFeature.INDENT_OUTPUT);
+    MAPPER.enable(new MapperFeature[]{MapperFeature.AUTO_DETECT_FIELDS});
+    MAPPER.enable(new MapperFeature[]{MapperFeature.CAN_OVERRIDE_ACCESS_MODIFIERS});
+    MAPPER.enable(new MapperFeature[]{MapperFeature.AUTO_DETECT_SETTERS});
+    MAPPER.enable(DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES);
   }
 
   @Inject
@@ -129,6 +141,60 @@ public class ZookeeperResource {
       throw new ControllerApplicationException(LOGGER, "Failed to delete path: " + path,
           Response.Status.INTERNAL_SERVER_ERROR);
     }
+  }
+
+  @PUT
+  @Path("/zk/putChildren")
+  @Authenticate(AccessType.UPDATE)
+  @Produces(MediaType.APPLICATION_JSON)
+  @Consumes(MediaType.APPLICATION_JSON)
+  @ApiOperation(value = "Update the content of multiple znRecord node under the same path")
+  @ApiResponses(value = {
+      @ApiResponse(code = 200, message = "Success"),
+      @ApiResponse(code = 404, message = "ZK Path not found"),
+      @ApiResponse(code = 204, message = "No Content"),
+      @ApiResponse(code = 500, message = "Internal server error")
+  })
+  public SuccessResponse putChildren(
+      @ApiParam(value = "Zookeeper path of parent, must start with /", required = true) @QueryParam("path") String path,
+      @ApiParam(value = "Content") @QueryParam("data") @Nullable String data,
+      @ApiParam(value = "expectedVersion", defaultValue = "-1") @QueryParam("expectedVersion") @DefaultValue("-1")
+          int expectedVersion,
+      @ApiParam(value = "accessOption", defaultValue = "1") @QueryParam("accessOption") @DefaultValue("1")
+          int accessOption,
+      @Nullable String payload) {
+
+    path = validateAndNormalizeZKPath(path, false);
+
+    if (StringUtils.isEmpty(data)) {
+      data = payload;
+    }
+    if (StringUtils.isEmpty(data)) {
+      throw new ControllerApplicationException(LOGGER, "Must provide data through query parameter or payload",
+          Response.Status.BAD_REQUEST);
+    }
+    List<ZNRecord> znRecords;
+    try {
+      znRecords = MAPPER.readValue(data, new TypeReference<List<ZNRecord>>() { });
+    } catch (Exception e) {
+      throw new ControllerApplicationException(LOGGER, "Failed to deserialize the data", Response.Status.BAD_REQUEST,
+          e);
+    }
+
+    for (ZNRecord znRecord : znRecords) {
+      String childPath = path + "/" + znRecord.getId();
+      try {
+        boolean result = _pinotHelixResourceManager.setZKData(childPath, znRecord, expectedVersion, accessOption);
+        if (!result) {
+          throw new ControllerApplicationException(LOGGER, "Failed to update path: " + childPath,
+              Response.Status.INTERNAL_SERVER_ERROR);
+        }
+      } catch (Exception e) {
+        throw new ControllerApplicationException(LOGGER, "Failed to update path: " + childPath,
+            Response.Status.INTERNAL_SERVER_ERROR, e);
+      }
+    }
+    return new SuccessResponse("Successfully updated " + znRecords.size() + " ZnRecords under path: " + path);
   }
 
   @PUT

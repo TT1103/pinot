@@ -39,9 +39,9 @@ public class QuickStartCommand extends AbstractBaseAdminCommand implements Comma
       description = "Type of quickstart, supported: STREAM/BATCH/HYBRID")
   private String _type;
 
-  @CommandLine.Option(names = {"-bootstrapTableDir"}, required = false,
-      description = "Directory containing table schema, config, and data.")
-  private String _bootstrapTableDir;
+  @CommandLine.Option(names = {"-bootstrapTableDir"}, required = false, arity = "1..*",
+      description = "A list of Directories, each directory containing table schema, config, and data.")
+  private String[] _bootstrapTableDirs;
 
   @CommandLine.Option(names = {"-tmpDir", "-quickstartDir", "-dataDir"}, required = false,
       description = "Temp Directory to host quickstart data")
@@ -74,6 +74,10 @@ public class QuickStartCommand extends AbstractBaseAdminCommand implements Comma
     return this;
   }
 
+  public String getType() {
+    return _type;
+  }
+
   public String getTmpDir() {
     return _tmpDir;
   }
@@ -83,11 +87,19 @@ public class QuickStartCommand extends AbstractBaseAdminCommand implements Comma
   }
 
   public String getBootstrapDataDir() {
-    return _bootstrapTableDir;
+    return (_bootstrapTableDirs != null && _bootstrapTableDirs.length > 0) ? _bootstrapTableDirs[0] : null;
+  }
+
+  public String[] getBootstrapDataDirs() {
+    return _bootstrapTableDirs;
   }
 
   public void setBootstrapTableDir(String bootstrapTableDir) {
-    _bootstrapTableDir = bootstrapTableDir;
+    _bootstrapTableDirs = new String[]{bootstrapTableDir};
+  }
+
+  public void setBootstrapTableDirs(String[] bootstrapTableDirs) {
+    _bootstrapTableDirs = bootstrapTableDirs;
   }
 
   public String getZkExternalAddress() {
@@ -96,6 +108,14 @@ public class QuickStartCommand extends AbstractBaseAdminCommand implements Comma
 
   public void setZkExternalAddress(String zkExternalAddress) {
     _zkExternalAddress = zkExternalAddress;
+  }
+
+  public String getConfigFilePath() {
+    return _configFilePath;
+  }
+
+  public void setConfigFilePath(String configFilePath) {
+    _configFilePath = configFilePath;
   }
 
   @Override
@@ -112,8 +132,8 @@ public class QuickStartCommand extends AbstractBaseAdminCommand implements Comma
     return "Run Pinot QuickStart.";
   }
 
-  public static QuickStartBase selectQuickStart(String type)
-          throws NoSuchMethodException, InvocationTargetException, InstantiationException, IllegalAccessException {
+  public QuickStartBase selectQuickStart(String type)
+      throws NoSuchMethodException, InvocationTargetException, InstantiationException, IllegalAccessException {
     Set<Class<? extends QuickStartBase>> quickStarts = allQuickStarts();
     for (Class<? extends QuickStartBase> quickStart : quickStarts) {
       QuickStartBase quickStartBase = quickStart.getDeclaredConstructor().newInstance();
@@ -122,18 +142,19 @@ public class QuickStartCommand extends AbstractBaseAdminCommand implements Comma
       }
     }
     throw new UnsupportedOperationException("Unsupported QuickStart type: " + type + ". "
-            + "Valid types are: " + errroMessageFor(quickStarts));
+        + "Valid types are: " + errroMessageFor(quickStarts));
   }
 
   @Override
-  public boolean execute() throws Exception {
+  public boolean execute()
+      throws Exception {
     PluginManager.get().init();
 
     if (_type == null) {
       Set<Class<? extends QuickStartBase>> quickStarts = allQuickStarts();
 
       throw new UnsupportedOperationException("No QuickStart type provided. "
-              + "Valid types are: " + errroMessageFor(quickStarts));
+          + "Valid types are: " + errroMessageFor(quickStarts));
     }
 
     QuickStartBase quickstart = selectQuickStart(_type);
@@ -142,8 +163,8 @@ public class QuickStartCommand extends AbstractBaseAdminCommand implements Comma
       quickstart.setDataDir(_tmpDir);
     }
 
-    if (_bootstrapTableDir != null) {
-      quickstart.setBootstrapDataDir(_bootstrapTableDir);
+    if (_bootstrapTableDirs != null) {
+      quickstart.setBootstrapDataDirs(_bootstrapTableDirs);
     }
 
     if (_zkExternalAddress != null) {
@@ -159,7 +180,7 @@ public class QuickStartCommand extends AbstractBaseAdminCommand implements Comma
   }
 
   private static List<String> errroMessageFor(Set<Class<? extends QuickStartBase>> quickStarts)
-          throws InstantiationException, IllegalAccessException, InvocationTargetException, NoSuchMethodException {
+      throws InstantiationException, IllegalAccessException, InvocationTargetException, NoSuchMethodException {
     List<String> validTypes = new ArrayList<>();
     for (Class<? extends QuickStartBase> quickStart : quickStarts) {
       validTypes.addAll(quickStart.getDeclaredConstructor().newInstance().types());
@@ -167,7 +188,7 @@ public class QuickStartCommand extends AbstractBaseAdminCommand implements Comma
     return validTypes;
   }
 
-  private static Set<Class<? extends QuickStartBase>> allQuickStarts() {
+  protected Set<Class<? extends QuickStartBase>> allQuickStarts() {
     Reflections reflections = new Reflections("org.apache.pinot.tools");
     return reflections.getSubTypesOf(QuickStartBase.class);
   }

@@ -33,7 +33,6 @@ import javax.annotation.Nullable;
 import org.apache.commons.collections.CollectionUtils;
 import org.apache.commons.io.FileUtils;
 import org.apache.pinot.segment.local.recordtransformer.ComplexTypeTransformer;
-import org.apache.pinot.segment.local.recordtransformer.CompositeTransformer;
 import org.apache.pinot.segment.local.recordtransformer.RecordTransformer;
 import org.apache.pinot.segment.local.segment.creator.IntermediateSegmentSegmentCreationDataSource;
 import org.apache.pinot.segment.local.segment.creator.RecordReaderSegmentCreationDataSource;
@@ -77,7 +76,6 @@ import org.slf4j.LoggerFactory;
  * Implementation of an index segment creator.
  */
 // TODO: Check resource leaks
-@SuppressWarnings("serial")
 public class SegmentIndexCreationDriverImpl implements SegmentIndexCreationDriver {
   private static final Logger LOGGER = LoggerFactory.getLogger(SegmentIndexCreationDriverImpl.class);
 
@@ -96,6 +94,7 @@ public class SegmentIndexCreationDriverImpl implements SegmentIndexCreationDrive
   private long _totalRecordReadTime = 0;
   private long _totalIndexTime = 0;
   private long _totalStatsCollectorTime = 0;
+  private boolean _continueOnError;
 
   @Override
   public void init(SegmentGeneratorConfig config)
@@ -151,20 +150,32 @@ public class SegmentIndexCreationDriverImpl implements SegmentIndexCreationDrive
       LOGGER.info("RecordReaderSegmentCreationDataSource is used");
       dataSource = new RecordReaderSegmentCreationDataSource(recordReader);
     }
-    init(config, dataSource, CompositeTransformer.getDefaultTransformer(config.getTableConfig(), config.getSchema()),
-        ComplexTypeTransformer.getComplexTypeTransformer(config.getTableConfig()));
+    init(config, dataSource, new TransformPipeline(config.getTableConfig(), config.getSchema()));
+  }
+
+  @Deprecated
+  public void init(SegmentGeneratorConfig config, SegmentCreationDataSource dataSource,
+      RecordTransformer recordTransformer, @Nullable ComplexTypeTransformer complexTypeTransformer)
+      throws Exception {
+    init(config, dataSource, new TransformPipeline(recordTransformer, complexTypeTransformer));
   }
 
   public void init(SegmentGeneratorConfig config, SegmentCreationDataSource dataSource,
-      RecordTransformer recordTransformer, @Nullable ComplexTypeTransformer complexTypeTransformer)
+      TransformPipeline transformPipeline)
       throws Exception {
     _config = config;
     _recordReader = dataSource.getRecordReader();
     _dataSchema = config.getSchema();
+    _continueOnError = config.isContinueOnError();
+
     if (config.isFailOnEmptySegment()) {
       Preconditions.checkState(_recordReader.hasNext(), "No record in data source");
     }
-    _transformPipeline = new TransformPipeline(recordTransformer, complexTypeTransformer);
+    _transformPipeline = transformPipeline;
+    // Use the same transform pipeline if the data source is backed by a record reader
+    if (dataSource instanceof RecordReaderSegmentCreationDataSource) {
+      ((RecordReaderSegmentCreationDataSource) dataSource).setTransformPipeline(transformPipeline);
+    }
 
     // Initialize stats collection
     _segmentStats = dataSource.gatherStats(
@@ -201,8 +212,11 @@ public class SegmentIndexCreationDriverImpl implements SegmentIndexCreationDrive
     LOGGER.info("Finished building StatsCollector!");
     LOGGER.info("Collected stats for {} documents", _totalDocs);
 
+    int incompleteRowsFound = 0;
     try {
       // Initialize the index creation using the per-column statistics information
+      // TODO: _indexCreationInfoMap holds the reference to all unique values on heap (ColumnIndexCreationInfo ->
+      //       ColumnStatistics) throughout the segment creation. Find a way to release the memory early.
       _indexCreator.init(_config, _segmentIndexCreationInfo, _indexCreationInfoMap, _dataSchema, _tempIndexDir);
 
       // Build the index
@@ -212,20 +226,31 @@ public class SegmentIndexCreationDriverImpl implements SegmentIndexCreationDrive
       TransformPipeline.Result reusedResult = new TransformPipeline.Result();
       while (_recordReader.hasNext()) {
         long recordReadStartTime = System.currentTimeMillis();
-        long recordReadStopTime;
+        long recordReadStopTime = System.currentTimeMillis();
         long indexStopTime;
         reuse.clear();
-        GenericRow decodedRow = _recordReader.next(reuse);
-        recordReadStartTime = System.currentTimeMillis();
-        _transformPipeline.processRow(decodedRow, reusedResult);
-        recordReadStopTime = System.currentTimeMillis();
-        _totalRecordReadTime += (recordReadStopTime - recordReadStartTime);
+        try {
+          GenericRow decodedRow = _recordReader.next(reuse);
+          recordReadStartTime = System.currentTimeMillis();
+          _transformPipeline.processRow(decodedRow, reusedResult);
+          recordReadStopTime = System.currentTimeMillis();
+          _totalRecordReadTime += (recordReadStopTime - recordReadStartTime);
+        } catch (Exception e) {
+          if (!_continueOnError) {
+            throw new RuntimeException("Error occurred while reading row during indexing", e);
+          } else {
+            incompleteRowsFound++;
+            LOGGER.debug("Error occurred while reading row during indexing", e);
+            continue;
+          }
+        }
 
         for (GenericRow row : reusedResult.getTransformedRows()) {
           _indexCreator.indexRow(row);
         }
         indexStopTime = System.currentTimeMillis();
         _totalIndexTime += (indexStopTime - recordReadStopTime);
+        incompleteRowsFound += reusedResult.getIncompleteRowCount();
       }
     } catch (Exception e) {
       _indexCreator.close();
@@ -233,6 +258,12 @@ public class SegmentIndexCreationDriverImpl implements SegmentIndexCreationDrive
     } finally {
       _recordReader.close();
     }
+
+    if (incompleteRowsFound > 0) {
+      LOGGER.warn("Incomplete data found for {} records. This can be due to error during reader or transformations",
+          incompleteRowsFound);
+    }
+
     LOGGER.info("Finished records indexing in IndexCreator!");
 
     handlePostCreation();

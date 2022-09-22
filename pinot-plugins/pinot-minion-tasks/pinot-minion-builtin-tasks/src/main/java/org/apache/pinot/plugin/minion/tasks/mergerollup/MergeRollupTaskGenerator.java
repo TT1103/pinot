@@ -30,8 +30,8 @@ import java.util.concurrent.ConcurrentHashMap;
 import javax.annotation.Nullable;
 import org.I0Itec.zkclient.exception.ZkException;
 import org.apache.commons.lang3.StringUtils;
-import org.apache.helix.ZNRecord;
 import org.apache.helix.task.TaskState;
+import org.apache.helix.zookeeper.datamodel.ZNRecord;
 import org.apache.pinot.common.lineage.SegmentLineage;
 import org.apache.pinot.common.lineage.SegmentLineageUtils;
 import org.apache.pinot.common.metadata.segment.SegmentPartitionMetadata;
@@ -77,7 +77,7 @@ import org.slf4j.LoggerFactory;
  *    - Repeat until k time buckets get created or we loop through all the candidate segments:
  *      - Calculate merge/roll-up bucket:
  *        - Read watermarkMs from the {@link MergeRollupTaskMetadata} ZNode found at
- *          {@code MINION_TASK_METADATA/MergeRollupTask/<tableNameWithType>}
+ *          MINION_TASK_METADATA/${tableNameWithType}/MergeRollupTask
  *          In case of cold-start, no ZNode will exist.
  *          A new ZNode will be created, with watermarkMs as the smallest time found in all segments truncated to the
  *          closest bucket start time.

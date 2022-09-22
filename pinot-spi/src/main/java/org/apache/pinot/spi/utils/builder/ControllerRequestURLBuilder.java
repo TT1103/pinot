@@ -223,6 +223,15 @@ public class ControllerRequestURLBuilder {
     return StringUtil.join("/", _baseUrl, "segments", tableName, query);
   }
 
+  public String forTableReset(String tableNameWithType, @Nullable String targetInstance) {
+    String query = targetInstance == null ? "reset" : String.format("reset?targetInstance=%s", targetInstance);
+    return StringUtil.join("/", _baseUrl, "segments", tableNameWithType, query);
+  }
+
+  public String forControllerJobStatus(String jobId) {
+    return StringUtil.join("/", _baseUrl, "segments", "segmentReloadStatus", jobId);
+  }
+
   public String forTableSize(String tableName) {
     return StringUtil.join("/", _baseUrl, "tables", tableName, "size");
   }
@@ -312,6 +321,11 @@ public class ControllerRequestURLBuilder {
         "reload?forceDownload=" + forceDownload);
   }
 
+  public String forSegmentReset(String tableNameWithType, String segmentName, String targetInstance) {
+    String query = targetInstance == null ? "reset" : String.format("reset?targetInstance=%s", targetInstance);
+    return StringUtil.join("/", _baseUrl, "segments", tableNameWithType, encode(segmentName), query);
+  }
+
   public String forSegmentDownload(String tableName, String segmentName) {
     return StringUtil.join("/", _baseUrl, "segments", tableName, encode(segmentName));
   }
@@ -344,6 +358,10 @@ public class ControllerRequestURLBuilder {
     return StringUtil.join("/", _baseUrl, "segments", tableName, encode(segmentName), "metadata");
   }
 
+  public String forListAllSegmentLineages(String tableName, String tableType) {
+    return StringUtil.join("/", _baseUrl, "segments", tableName, "lineage?type=" + tableType);
+  }
+
   public String forListAllCrcInformationForTable(String tableName) {
     return StringUtil.join("/", _baseUrl, "tables", tableName, "segments", "crc");
   }
@@ -352,12 +370,27 @@ public class ControllerRequestURLBuilder {
     return StringUtil.join("/", _baseUrl, "tables", tableName + "?type=" + tableType);
   }
 
-  public String forSegmentListAPIWithTableType(String tableName, String tableType) {
-    return StringUtil.join("/", _baseUrl, "segments", tableName + "?type=" + tableType);
+  public String forSegmentListAPI(String tableName) {
+    return forSegmentListAPI(tableName, null, false);
   }
 
-  public String forSegmentListAPI(String tableName) {
-    return StringUtil.join("/", _baseUrl, "segments", tableName);
+  public String forSegmentListAPI(String tableName, String tableType) {
+    return forSegmentListAPI(tableName, tableType, false);
+  }
+
+  public String forSegmentListAPI(String tableName, @Nullable String tableType, boolean excludeReplacedSegments) {
+    String url = StringUtil.join("/", _baseUrl, "segments", tableName);
+    if (tableType != null) {
+      url += "?type=" + tableType;
+      if (excludeReplacedSegments) {
+        url += "&excludeReplacedSegments=" + excludeReplacedSegments;
+      }
+    } else {
+      if (excludeReplacedSegments) {
+        url += "?excludeReplacedSegments=" + excludeReplacedSegments;
+      }
+    }
+    return url;
   }
 
   public String forInstancePartitions(String tableName, @Nullable InstancePartitionsType instancePartitionsType) {
@@ -438,6 +471,10 @@ public class ControllerRequestURLBuilder {
     return StringUtil.join("/", _baseUrl, "zk/put");
   }
 
+  public String forZkPutChildren(String path) {
+    return StringUtil.join("/", _baseUrl, "zk/putChildren", "?path=" + path);
+  }
+
   public String forZkGet(String path) {
     return StringUtil.join("/", _baseUrl, "zk/get", "?path=" + path);
   }
@@ -449,6 +486,18 @@ public class ControllerRequestURLBuilder {
   public String forUpsertTableHeapEstimation(long cardinality, int primaryKeySize, int numPartitions) {
     return StringUtil.join("/", _baseUrl, "upsert/estimateHeapUsage",
         "?cardinality=" + cardinality + "&primaryKeySize=" + primaryKeySize + "&numPartitions=" + numPartitions);
+  }
+
+  public String forPauseConsumption(String tableName) {
+    return StringUtil.join("/", _baseUrl, "tables", tableName, "pauseConsumption");
+  }
+
+  public String forResumeConsumption(String tableName) {
+    return StringUtil.join("/", _baseUrl, "tables", tableName, "resumeConsumption");
+  }
+
+  public String forPauseStatus(String tableName) {
+    return StringUtil.join("/", _baseUrl, "tables", tableName, "pauseStatus");
   }
 
   private static String encode(String s) {

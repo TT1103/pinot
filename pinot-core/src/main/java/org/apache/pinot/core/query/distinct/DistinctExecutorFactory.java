@@ -18,7 +18,6 @@
  */
 package org.apache.pinot.core.query.distinct;
 
-import com.google.common.base.Preconditions;
 import java.util.ArrayList;
 import java.util.List;
 import org.apache.pinot.common.request.context.ExpressionContext;
@@ -60,61 +59,60 @@ public class DistinctExecutorFactory {
    * Returns the {@link DistinctExecutor} for the given distinct query.
    */
   public static DistinctExecutor getDistinctExecutor(DistinctAggregationFunction distinctAggregationFunction,
-      TransformOperator transformOperator) {
+      TransformOperator transformOperator, boolean nullHandlingEnabled) {
     List<ExpressionContext> expressions = distinctAggregationFunction.getInputExpressions();
     List<OrderByExpressionContext> orderByExpressions = distinctAggregationFunction.getOrderByExpressions();
     int limit = distinctAggregationFunction.getLimit();
     if (orderByExpressions == null) {
-      return getDistinctOnlyExecutor(expressions, limit, transformOperator);
+      return getDistinctOnlyExecutor(expressions, limit, transformOperator, nullHandlingEnabled);
     } else {
-      return getDistinctOrderByExecutor(expressions, orderByExpressions, limit, transformOperator);
+      return getDistinctOrderByExecutor(
+          expressions, orderByExpressions, limit, transformOperator, nullHandlingEnabled);
     }
   }
 
   private static DistinctExecutor getDistinctOnlyExecutor(List<ExpressionContext> expressions, int limit,
-      TransformOperator transformOperator) {
-    if (expressions.size() == 1) {
+      TransformOperator transformOperator, boolean nullHandlingEnabled) {
+    int numExpressions = expressions.size();
+    if (numExpressions == 1) {
       // Single column
       ExpressionContext expression = expressions.get(0);
       TransformResultMetadata expressionMetadata = transformOperator.getResultMetadata(expression);
-      // TODO: Support MV expression
-      Preconditions.checkArgument(expressionMetadata.isSingleValue(), "DISTINCT cannot be applied to MV expression: %s",
-          expression);
       DataType dataType = expressionMetadata.getDataType();
       Dictionary dictionary = transformOperator.getDictionary(expression);
-      if (dictionary != null) {
+      if (dictionary != null && !nullHandlingEnabled) {
         // Dictionary based
         return new DictionaryBasedSingleColumnDistinctOnlyExecutor(expression, dictionary, dataType, limit);
       } else {
         // Raw value based
         switch (dataType.getStoredType()) {
           case INT:
-            return new RawIntSingleColumnDistinctOnlyExecutor(expression, dataType, limit);
+            return new RawIntSingleColumnDistinctOnlyExecutor(expression, dataType, limit, nullHandlingEnabled);
           case LONG:
-            return new RawLongSingleColumnDistinctOnlyExecutor(expression, dataType, limit);
+            return new RawLongSingleColumnDistinctOnlyExecutor(expression, dataType, limit, nullHandlingEnabled);
           case FLOAT:
-            return new RawFloatSingleColumnDistinctOnlyExecutor(expression, dataType, limit);
+            return new RawFloatSingleColumnDistinctOnlyExecutor(expression, dataType, limit, nullHandlingEnabled);
           case DOUBLE:
-            return new RawDoubleSingleColumnDistinctOnlyExecutor(expression, dataType, limit);
+            return new RawDoubleSingleColumnDistinctOnlyExecutor(expression, dataType, limit, nullHandlingEnabled);
           case BIG_DECIMAL:
-            return new RawBigDecimalSingleColumnDistinctOnlyExecutor(expression, dataType, limit);
+            return new RawBigDecimalSingleColumnDistinctOnlyExecutor(expression, dataType, limit, nullHandlingEnabled);
           case STRING:
-            return new RawStringSingleColumnDistinctOnlyExecutor(expression, dataType, limit);
+            return new RawStringSingleColumnDistinctOnlyExecutor(expression, dataType, limit, nullHandlingEnabled);
           case BYTES:
-            return new RawBytesSingleColumnDistinctOnlyExecutor(expression, dataType, limit);
+            return new RawBytesSingleColumnDistinctOnlyExecutor(expression, dataType, limit, nullHandlingEnabled);
           default:
             throw new IllegalStateException();
         }
       }
     } else {
       // Multiple columns
-      int numExpressions = expressions.size();
+      boolean hasMVExpression = false;
       List<DataType> dataTypes = new ArrayList<>(numExpressions);
       for (ExpressionContext expression : expressions) {
         TransformResultMetadata expressionMetadata = transformOperator.getResultMetadata(expression);
-        // TODO: Support MV expression
-        Preconditions.checkArgument(expressionMetadata.isSingleValue(),
-            "DISTINCT cannot be applied to MV expression: %s", expression);
+        if (!expressionMetadata.isSingleValue()) {
+          hasMVExpression = true;
+        }
         dataTypes.add(expressionMetadata.getDataType());
       }
       List<Dictionary> dictionaries = new ArrayList<>(numExpressions);
@@ -130,29 +128,29 @@ public class DistinctExecutorFactory {
       }
       if (dictionaryBased) {
         // Dictionary based
-        return new DictionaryBasedMultiColumnDistinctOnlyExecutor(expressions, dictionaries, dataTypes, limit);
+        return new DictionaryBasedMultiColumnDistinctOnlyExecutor(expressions, hasMVExpression, dictionaries, dataTypes,
+            limit);
       } else {
         // Raw value based
-        return new RawMultiColumnDistinctExecutor(expressions, dataTypes, null, limit);
+        return new RawMultiColumnDistinctExecutor(expressions, hasMVExpression, dataTypes, null, limit);
       }
     }
   }
 
   private static DistinctExecutor getDistinctOrderByExecutor(List<ExpressionContext> expressions,
-      List<OrderByExpressionContext> orderByExpressions, int limit, TransformOperator transformOperator) {
-    if (expressions.size() == 1) {
+      List<OrderByExpressionContext> orderByExpressions, int limit, TransformOperator transformOperator,
+      boolean nullHandlingEnabled) {
+    int numExpressions = expressions.size();
+    if (numExpressions == 1) {
       // Single column
       ExpressionContext expression = expressions.get(0);
       TransformResultMetadata expressionMetadata = transformOperator.getResultMetadata(expression);
-      // TODO: Support MV expression
-      Preconditions.checkArgument(expressionMetadata.isSingleValue(), "DISTINCT cannot be applied to MV expression: %s",
-          expression);
       DataType dataType = expressionMetadata.getDataType();
       assert orderByExpressions.size() == 1;
       OrderByExpressionContext orderByExpression = orderByExpressions.get(0);
       Dictionary dictionary = transformOperator.getDictionary(expression);
       // Note: Use raw value based when dictionary is not sorted (consuming segments).
-      if (dictionary != null && dictionary.isSorted()) {
+      if (dictionary != null && dictionary.isSorted() && !nullHandlingEnabled) {
         // Dictionary based
         return new DictionaryBasedSingleColumnDistinctOrderByExecutor(expression, dictionary, dataType,
             orderByExpressions.get(0), limit);
@@ -160,32 +158,39 @@ public class DistinctExecutorFactory {
         // Raw value based
         switch (dataType.getStoredType()) {
           case INT:
-            return new RawIntSingleColumnDistinctOrderByExecutor(expression, dataType, orderByExpression, limit);
+            return new RawIntSingleColumnDistinctOrderByExecutor(expression, dataType, orderByExpression, limit,
+                nullHandlingEnabled);
           case LONG:
-            return new RawLongSingleColumnDistinctOrderByExecutor(expression, dataType, orderByExpression, limit);
+            return new RawLongSingleColumnDistinctOrderByExecutor(expression, dataType, orderByExpression, limit,
+                nullHandlingEnabled);
           case FLOAT:
-            return new RawFloatSingleColumnDistinctOrderByExecutor(expression, dataType, orderByExpression, limit);
+            return new RawFloatSingleColumnDistinctOrderByExecutor(expression, dataType, orderByExpression, limit,
+                nullHandlingEnabled);
           case DOUBLE:
-            return new RawDoubleSingleColumnDistinctOrderByExecutor(expression, dataType, orderByExpression, limit);
+            return new RawDoubleSingleColumnDistinctOrderByExecutor(expression, dataType, orderByExpression, limit,
+                nullHandlingEnabled);
           case BIG_DECIMAL:
-            return new RawBigDecimalSingleColumnDistinctOrderByExecutor(expression, dataType, orderByExpression, limit);
+            return new RawBigDecimalSingleColumnDistinctOrderByExecutor(expression, dataType, orderByExpression, limit,
+                nullHandlingEnabled);
           case STRING:
-            return new RawStringSingleColumnDistinctOrderByExecutor(expression, dataType, orderByExpression, limit);
+            return new RawStringSingleColumnDistinctOrderByExecutor(expression, dataType, orderByExpression, limit,
+                nullHandlingEnabled);
           case BYTES:
-            return new RawBytesSingleColumnDistinctOrderByExecutor(expression, dataType, orderByExpression, limit);
+            return new RawBytesSingleColumnDistinctOrderByExecutor(expression, dataType, orderByExpression, limit,
+                nullHandlingEnabled);
           default:
             throw new IllegalStateException();
         }
       }
     } else {
       // Multiple columns
-      int numExpressions = expressions.size();
+      boolean hasMVExpression = false;
       List<DataType> dataTypes = new ArrayList<>(numExpressions);
       for (ExpressionContext expression : expressions) {
         TransformResultMetadata expressionMetadata = transformOperator.getResultMetadata(expression);
-        // TODO: Support MV expression
-        Preconditions.checkArgument(expressionMetadata.isSingleValue(),
-            "DISTINCT cannot be applied to MV expression: %s", expression);
+        if (!expressionMetadata.isSingleValue()) {
+          hasMVExpression = true;
+        }
         dataTypes.add(expressionMetadata.getDataType());
       }
       List<Dictionary> dictionaries = new ArrayList<>(numExpressions);
@@ -202,11 +207,11 @@ public class DistinctExecutorFactory {
       }
       if (dictionaryBased) {
         // Dictionary based
-        return new DictionaryBasedMultiColumnDistinctOrderByExecutor(expressions, dictionaries, dataTypes,
-            orderByExpressions, limit);
+        return new DictionaryBasedMultiColumnDistinctOrderByExecutor(expressions, hasMVExpression, dictionaries,
+            dataTypes, orderByExpressions, limit);
       } else {
         // Raw value based
-        return new RawMultiColumnDistinctExecutor(expressions, dataTypes, orderByExpressions, limit);
+        return new RawMultiColumnDistinctExecutor(expressions, hasMVExpression, dataTypes, orderByExpressions, limit);
       }
     }
   }

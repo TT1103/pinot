@@ -21,7 +21,6 @@ package org.apache.pinot.common.utils.config;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import com.google.common.collect.Lists;
 import java.io.IOException;
-import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
 import java.util.HashMap;
@@ -29,7 +28,9 @@ import java.util.List;
 import java.util.Map;
 import org.apache.pinot.common.tier.TierFactory;
 import org.apache.pinot.spi.config.table.CompletionConfig;
+import org.apache.pinot.spi.config.table.DedupConfig;
 import org.apache.pinot.spi.config.table.FieldConfig;
+import org.apache.pinot.spi.config.table.HashFunction;
 import org.apache.pinot.spi.config.table.QueryConfig;
 import org.apache.pinot.spi.config.table.QuotaConfig;
 import org.apache.pinot.spi.config.table.ReplicaGroupStrategyConfig;
@@ -249,14 +250,19 @@ public class TableConfigSerDeTest {
     }
     {
       // with upsert config
-      UpsertConfig upsertConfig =
-          new UpsertConfig(UpsertConfig.Mode.FULL, null, null, "comparison", UpsertConfig.HashFunction.NONE);
-
-      TableConfig tableConfig = tableConfigBuilder.setUpsertConfig(upsertConfig).build();
+      TableConfig tableConfig = tableConfigBuilder.setUpsertConfig(new UpsertConfig(UpsertConfig.Mode.FULL)).build();
 
       // Serialize then de-serialize
       checkTableConfigWithUpsertConfig(JsonUtils.stringToObject(tableConfig.toJsonString(), TableConfig.class));
       checkTableConfigWithUpsertConfig(TableConfigUtils.fromZNRecord(TableConfigUtils.toZNRecord(tableConfig)));
+    }
+    {
+      // with dedup config
+      DedupConfig dedupConfig = new DedupConfig(true, HashFunction.MD5);
+      TableConfig tableConfig = tableConfigBuilder.setDedupConfig(dedupConfig).build();
+      // Serialize then de-serialize
+      checkTableConfigWithDedupConfig(JsonUtils.stringToObject(tableConfig.toJsonString(), TableConfig.class));
+      checkTableConfigWithDedupConfig(TableConfigUtils.fromZNRecord(TableConfigUtils.toZNRecord(tableConfig)));
     }
     {
       // with SegmentsValidationAndRetentionConfig
@@ -268,27 +274,21 @@ public class TableConfigSerDeTest {
     }
     {
       // With ingestion config
-      List<AggregationConfig> aggregationConfigs = Lists.newArrayList(new AggregationConfig("SUM__bar", "SUM(bar)"),
-          new AggregationConfig("MIN_foo", "MIN(foo)"));
-      List<TransformConfig> transformConfigs =
-          Lists.newArrayList(new TransformConfig("bar", "func(moo)"), new TransformConfig("zoo", "myfunc()"));
-      Map<String, String> batchConfigMap = new HashMap<>();
-      batchConfigMap.put("batchType", "s3");
-      Map<String, String> streamConfigMap = new HashMap<>();
-      streamConfigMap.put("streamType", "kafka");
-      List<Map<String, String>> streamConfigMaps = new ArrayList<>();
-      streamConfigMaps.add(streamConfigMap);
-      List<Map<String, String>> batchConfigMaps = new ArrayList<>();
-      batchConfigMaps.add(batchConfigMap);
-      List<String> fieldsToUnnest = Arrays.asList("c1, c2");
-      Map<String, String> prefixesToRename = new HashMap<>();
-      IngestionConfig ingestionConfig =
-          new IngestionConfig(new BatchIngestionConfig(batchConfigMaps, "APPEND", "HOURLY"),
-              new StreamIngestionConfig(streamConfigMaps), new FilterConfig("filterFunc(foo)"), transformConfigs,
-              new ComplexTypeConfig(fieldsToUnnest, ".", ComplexTypeConfig.CollectionNotUnnestedToJson.NON_PRIMITIVE,
-                  prefixesToRename), aggregationConfigs);
-      TableConfig tableConfig = tableConfigBuilder.setIngestionConfig(ingestionConfig).build();
+      IngestionConfig ingestionConfig = new IngestionConfig();
+      ingestionConfig.setBatchIngestionConfig(
+          new BatchIngestionConfig(Collections.singletonList(Collections.singletonMap("batchType", "s3")), "APPEND",
+              "HOURLY"));
+      ingestionConfig.setStreamIngestionConfig(
+          new StreamIngestionConfig(Collections.singletonList(Collections.singletonMap("streamType", "kafka"))));
+      ingestionConfig.setFilterConfig(new FilterConfig("filterFunc(foo)"));
+      ingestionConfig.setTransformConfigs(
+          Arrays.asList(new TransformConfig("bar", "func(moo)"), new TransformConfig("zoo", "myfunc()")));
+      ingestionConfig.setComplexTypeConfig(new ComplexTypeConfig(Arrays.asList("c1", "c2"), ".",
+          ComplexTypeConfig.CollectionNotUnnestedToJson.NON_PRIMITIVE, Collections.emptyMap()));
+      ingestionConfig.setAggregationConfigs(
+          Arrays.asList(new AggregationConfig("SUM__bar", "SUM(bar)"), new AggregationConfig("MIN_foo", "MIN(foo)")));
 
+      TableConfig tableConfig = tableConfigBuilder.setIngestionConfig(ingestionConfig).build();
       checkIngestionConfig(tableConfig);
 
       // Serialize then de-serialize
@@ -548,5 +548,13 @@ public class TableConfigSerDeTest {
     assertNotNull(upsertConfig);
 
     assertEquals(upsertConfig.getMode(), UpsertConfig.Mode.FULL);
+  }
+
+  private void checkTableConfigWithDedupConfig(TableConfig tableConfig) {
+    DedupConfig dedupConfig = tableConfig.getDedupConfig();
+    assertNotNull(dedupConfig);
+
+    assertTrue(dedupConfig.isDedupEnabled());
+    assertEquals(dedupConfig.getHashFunction(), HashFunction.MD5);
   }
 }

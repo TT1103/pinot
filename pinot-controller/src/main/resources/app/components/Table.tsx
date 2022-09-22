@@ -44,7 +44,7 @@ import ArrowDropDownIcon from '@material-ui/icons/ArrowDropDown';
 import ArrowDropUpIcon from '@material-ui/icons/ArrowDropUp';
 import { Link } from 'react-router-dom';
 import Chip from '@material-ui/core/Chip';
-import _ from 'lodash';
+import { get, has, orderBy } from 'lodash';
 import app_state from '../app_state';
 import Utils from '../utils/Utils';
 import TableToolbar from './TableToolbar';
@@ -53,9 +53,8 @@ import SimpleAccordion from './SimpleAccordion';
 type Props = {
   title?: string,
   data: TableData,
-  noOfRows?: number,
+  defaultRowsPerPage?: number,
   addLinks?: boolean,
-  isPagination?: boolean,
   cellClickCallback?: Function,
   isCellClickable?: boolean,
   highlightBackground?: boolean,
@@ -257,9 +256,8 @@ TablePaginationActions.propTypes = {
 export default function CustomizedTables({
   title,
   data,
-  noOfRows,
+  defaultRowsPerPage,
   addLinks,
-  isPagination,
   cellClickCallback,
   isCellClickable,
   highlightBackground,
@@ -278,7 +276,7 @@ export default function CustomizedTables({
   const [columnClicked, setColumnClicked] = React.useState('');
 
   const classes = useStyles();
-  const [rowsPerPage, setRowsPerPage] = React.useState(noOfRows || 10);
+  const [rowsPerPage, setRowsPerPage] = React.useState(defaultRowsPerPage || 10);
   const [page, setPage] = React.useState(0);
 
   const handleChangeRowsPerPage = (
@@ -329,7 +327,7 @@ export default function CustomizedTables({
   }, [data]);
 
   const styleCell = (str: string) => {
-    if (str === 'Good' || str.toLowerCase() === 'online' || str.toLowerCase() === 'alive') {
+    if (str === 'Good' || str.toLowerCase() === 'online' || str.toLowerCase() === 'alive' || str.toLowerCase() === 'true') {
       return (
         <StyledChip
           label={str}
@@ -338,7 +336,7 @@ export default function CustomizedTables({
         />
       );
     }
-    if (str === 'Bad' || str.toLowerCase() === 'offline' || str.toLowerCase() === 'dead') {
+    if (str === 'Bad' || str.toLowerCase() === 'offline' || str.toLowerCase() === 'dead' || str.toLowerCase() === 'false') {
       return (
         <StyledChip
           label={str}
@@ -383,14 +381,14 @@ export default function CustomizedTables({
 
   const makeCell = (cellData, rowIndex) => {
     if (Object.prototype.toString.call(cellData) === '[object Object]') {
-      if (_.has(cellData, 'component') && cellData.component) {
+      if (has(cellData, 'component') && cellData.component) {
 
 
         let cell = (styleCell(cellData.value))
         let statusModal = (
             <Dialog
                 onClose={handleModalClose(rowIndex)}
-                open={_.get(modalStatus, rowIndex, false)}
+                open={get(modalStatus, rowIndex, false)}
                 fullWidth={true}
                 maxWidth={'xl'}
             >
@@ -403,7 +401,7 @@ export default function CustomizedTables({
                 {onClick: handleModalOpen(rowIndex)},
             )
         );
-        if (_.has(cellData, 'tooltip') && cellData.tooltip) {
+        if (has(cellData, 'tooltip') && cellData.tooltip) {
           cell = (
               <Tooltip
                   title={cellData.tooltip}
@@ -420,7 +418,7 @@ export default function CustomizedTables({
               {statusModal}
             </>
         );
-      } else if (_.has(cellData, 'tooltip') && cellData.tooltip) {
+      } else if (has(cellData, 'tooltip') && cellData.tooltip) {
         return (
             <Tooltip
                 title={cellData.tooltip}
@@ -458,7 +456,7 @@ export default function CustomizedTables({
                         });
                         setFinalData(data);
                       } else {
-                        setFinalData(_.orderBy(finalData, column+app_state.columnNameSeparator+index, order ? 'asc' : 'desc'));
+                        setFinalData(orderBy(finalData, column+app_state.columnNameSeparator+index, order ? 'asc' : 'desc'));
                       }
                       setOrder(!order);
                       setColumnClicked(column);
@@ -529,7 +527,7 @@ export default function CustomizedTables({
             </TableBody>
           </Table>
         </TableContainer>
-        {isPagination && finalData.length > 10 ? (
+        {finalData.length > 10 ? (
           <TablePagination
             rowsPerPageOptions={[5, 10, 25]}
             component="div"

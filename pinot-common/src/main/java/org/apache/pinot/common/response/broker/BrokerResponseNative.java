@@ -42,10 +42,10 @@ import org.apache.pinot.spi.utils.JsonUtils;
  */
 @JsonPropertyOrder({
     "resultTable", "exceptions", "numServersQueried", "numServersResponded", "numSegmentsQueried",
-    "numSegmentsProcessed", "numSegmentsMatched", "numConsumingSegmentsQueried", "numDocsScanned",
-    "numEntriesScannedInFilter", "numEntriesScannedPostFilter", "numGroupsLimitReached", "totalDocs", "timeUsedMs",
-    "offlineThreadCpuTimeNs", "realtimeThreadCpuTimeNs", "offlineSystemActivitiesCpuTimeNs",
-    "realtimeSystemActivitiesCpuTimeNs", "offlineResponseSerializationCpuTimeNs",
+    "numSegmentsProcessed", "numSegmentsMatched", "numConsumingSegmentsQueried", "numConsumingSegmentsProcessed",
+    "numConsumingSegmentsMatched", "numDocsScanned", "numEntriesScannedInFilter", "numEntriesScannedPostFilter",
+    "numGroupsLimitReached", "totalDocs", "timeUsedMs", "offlineThreadCpuTimeNs", "realtimeThreadCpuTimeNs",
+    "offlineSystemActivitiesCpuTimeNs", "realtimeSystemActivitiesCpuTimeNs", "offlineResponseSerializationCpuTimeNs",
     "realtimeResponseSerializationCpuTimeNs", "offlineTotalCpuTimeNs", "realtimeTotalCpuTimeNs", "segmentStatistics",
     "traceInfo"
 })
@@ -66,6 +66,8 @@ public class BrokerResponseNative implements BrokerResponse {
   private long _numSegmentsProcessed = 0L;
   private long _numSegmentsMatched = 0L;
   private long _numConsumingSegmentsQueried = 0L;
+  private long _numConsumingSegmentsProcessed = 0L;
+  private long _numConsumingSegmentsMatched = 0L;
   // the timestamp indicating the freshness of the data queried in consuming segments.
   // This can be ingestion timestamp if provided by the stream, or the last index time
   private long _minConsumingFreshnessTimeMs = 0L;
@@ -83,6 +85,9 @@ public class BrokerResponseNative implements BrokerResponse {
   private long _realtimeTotalCpuTimeNs = 0L;
   private long _numSegmentsPrunedByBroker = 0L;
   private long _numSegmentsPrunedByServer = 0L;
+  private long _numSegmentsPrunedInvalid = 0L;
+  private long _numSegmentsPrunedByLimit = 0L;
+  private long _numSegmentsPrunedByValue = 0L;
   private long _explainPlanNumEmptyFilterSegments = 0L;
   private long _explainPlanNumMatchAllFilterSegments = 0L;
   private int _numRowsResultSet = 0;
@@ -245,6 +250,42 @@ public class BrokerResponseNative implements BrokerResponse {
     _numSegmentsPrunedByServer = numSegmentsPrunedByServer;
   }
 
+  @JsonProperty("numSegmentsPrunedInvalid")
+  @Override
+  public long getNumSegmentsPrunedInvalid() {
+    return _numSegmentsPrunedInvalid;
+  }
+
+  @JsonProperty("numSegmentsPrunedInvalid")
+  @Override
+  public void setNumSegmentsPrunedInvalid(long numSegmentsPrunedInvalid) {
+    _numSegmentsPrunedInvalid = numSegmentsPrunedInvalid;
+  }
+
+  @JsonProperty("numSegmentsPrunedByLimit")
+  @Override
+  public long getNumSegmentsPrunedByLimit() {
+    return _numSegmentsPrunedByLimit;
+  }
+
+  @JsonProperty("numSegmentsPrunedByLimit")
+  @Override
+  public void setNumSegmentsPrunedByLimit(long numSegmentsPrunedByLimit) {
+    _numSegmentsPrunedByLimit = numSegmentsPrunedByLimit;
+  }
+
+  @JsonProperty("numSegmentsPrunedByValue")
+  @Override
+  public long getNumSegmentsPrunedByValue() {
+    return _numSegmentsPrunedByValue;
+  }
+
+  @JsonProperty("numSegmentsPrunedByValue")
+  @Override
+  public void setNumSegmentsPrunedByValue(long numSegmentsPrunedByValue) {
+    _numSegmentsPrunedByValue = numSegmentsPrunedByValue;
+  }
+
   @JsonProperty("explainPlanNumEmptyFilterSegments")
   @Override
   public long getExplainPlanNumEmptyFilterSegments() {
@@ -271,11 +312,13 @@ public class BrokerResponseNative implements BrokerResponse {
 
   @JsonProperty("resultTable")
   @JsonInclude(JsonInclude.Include.NON_NULL)
+  @Override
   public ResultTable getResultTable() {
     return _resultTable;
   }
 
   @JsonProperty("resultTable")
+  @Override
   public void setResultTable(ResultTable resultTable) {
     _resultTable = resultTable;
     _numRowsResultSet = resultTable.getRows().size();
@@ -389,6 +432,27 @@ public class BrokerResponseNative implements BrokerResponse {
   @JsonProperty("numConsumingSegmentsQueried")
   public void setNumConsumingSegmentsQueried(long numConsumingSegmentsQueried) {
     _numConsumingSegmentsQueried = numConsumingSegmentsQueried;
+  }
+
+  @JsonProperty("numConsumingSegmentsProcessed")
+  @Override
+  public long getNumConsumingSegmentsProcessed() {
+    return _numConsumingSegmentsProcessed;
+  }
+  @JsonProperty("numConsumingSegmentsProcessed")
+  public void setNumConsumingSegmentsProcessed(long numConsumingSegmentsProcessed) {
+    _numConsumingSegmentsProcessed = numConsumingSegmentsProcessed;
+  }
+
+  @JsonProperty("numConsumingSegmentsMatched")
+  @Override
+  public long getNumConsumingSegmentsMatched() {
+    return _numConsumingSegmentsMatched;
+  }
+
+  @JsonProperty("numConsumingSegmentsMatched")
+  public void setNumConsumingSegmentsMatched(long numConsumingSegmentsMatched) {
+    _numConsumingSegmentsMatched = numConsumingSegmentsMatched;
   }
 
   @JsonProperty("minConsumingFreshnessTimeMs")

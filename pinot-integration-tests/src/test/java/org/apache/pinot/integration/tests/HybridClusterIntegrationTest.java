@@ -140,7 +140,7 @@ public class HybridClusterIntegrationTest extends BaseClusterIntegrationTestSet 
       throws Exception {
     {
       String jsonOutputStr = sendGetRequest(
-          _controllerRequestURLBuilder.forSegmentListAPIWithTableType(getTableName(), TableType.OFFLINE.toString()));
+          _controllerRequestURLBuilder.forSegmentListAPI(getTableName(), TableType.OFFLINE.toString()));
       JsonNode array = JsonUtils.stringToJsonNode(jsonOutputStr);
       // There should be one element in the array
       JsonNode element = array.get(0);
@@ -149,7 +149,7 @@ public class HybridClusterIntegrationTest extends BaseClusterIntegrationTestSet 
     }
     {
       String jsonOutputStr = sendGetRequest(
-          _controllerRequestURLBuilder.forSegmentListAPIWithTableType(getTableName(), TableType.REALTIME.toString()));
+          _controllerRequestURLBuilder.forSegmentListAPI(getTableName(), TableType.REALTIME.toString()));
       JsonNode array = JsonUtils.stringToJsonNode(jsonOutputStr);
       // There should be one element in the array
       JsonNode element = array.get(0);
@@ -207,6 +207,18 @@ public class HybridClusterIntegrationTest extends BaseClusterIntegrationTestSet 
     Assert.assertNotNull(getDebugInfo("debug/routingTable/sql?query=" + encodedSQL));
     encodedSQL = URLEncoder.encode("select * from " + offlineTableName, "UTF-8");
     Assert.assertNotNull(getDebugInfo("debug/routingTable/sql?query=" + encodedSQL));
+  }
+
+  @Test
+  public void testQueryTracing()
+      throws Exception {
+    JsonNode jsonNode = postQuery("SET trace = true; SELECT COUNT(*) FROM " + getTableName());
+    Assert.assertEquals(jsonNode.get("resultTable").get("rows").get(0).get(0).asLong(), getCountStarResult());
+    Assert.assertTrue(jsonNode.get("exceptions").isEmpty());
+    JsonNode traceInfo = jsonNode.get("traceInfo");
+    Assert.assertEquals(traceInfo.size(), 2);
+    Assert.assertTrue(traceInfo.has("localhost_O"));
+    Assert.assertTrue(traceInfo.has("localhost_R"));
   }
 
   @Test
@@ -281,7 +293,7 @@ public class HybridClusterIntegrationTest extends BaseClusterIntegrationTestSet 
     stopController();
     stopKafka();
     stopZk();
-    cleanup();
+    cleanupHybridCluster();
   }
 
   /**
@@ -289,7 +301,7 @@ public class HybridClusterIntegrationTest extends BaseClusterIntegrationTestSet 
    *
    * @throws Exception
    */
-  protected void cleanup()
+  protected void cleanupHybridCluster()
       throws Exception {
     FileUtils.deleteDirectory(_tempDir);
   }

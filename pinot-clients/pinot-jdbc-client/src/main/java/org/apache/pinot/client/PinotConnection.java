@@ -23,10 +23,12 @@ import java.sql.DatabaseMetaData;
 import java.sql.PreparedStatement;
 import java.sql.SQLException;
 import java.sql.Statement;
+import java.util.Arrays;
 import java.util.List;
 import java.util.Properties;
 import org.apache.pinot.client.base.AbstractBaseConnection;
 import org.apache.pinot.client.controller.PinotControllerTransport;
+import org.apache.pinot.client.controller.PinotControllerTransportFactory;
 import org.apache.pinot.client.controller.response.ControllerTenantBrokerResponse;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -39,14 +41,7 @@ public class PinotConnection extends AbstractBaseConnection {
   private boolean _closed;
   private String _controllerURL;
   private PinotControllerTransport _controllerTransport;
-
-  PinotConnection(String controllerURL, PinotClientTransport transport, String tenant) {
-    this(new Properties(), controllerURL, transport, tenant, null);
-  }
-
-  PinotConnection(Properties properties, String controllerURL, PinotClientTransport transport, String tenant) {
-    this(properties, controllerURL, transport, tenant, null);
-  }
+  public static final String BROKER_LIST = "brokers";
 
   PinotConnection(String controllerURL, PinotClientTransport transport, String tenant,
       PinotControllerTransport controllerTransport) {
@@ -58,11 +53,16 @@ public class PinotConnection extends AbstractBaseConnection {
     _closed = false;
     _controllerURL = controllerURL;
     if (controllerTransport == null) {
-      _controllerTransport = new PinotControllerTransport();
+      _controllerTransport = new PinotControllerTransportFactory().buildTransport();
     } else {
       _controllerTransport = controllerTransport;
     }
-    List<String> brokers = getBrokerList(controllerURL, tenant);
+    List<String> brokers;
+    if (properties.containsKey(BROKER_LIST)) {
+      brokers = Arrays.asList(properties.getProperty(BROKER_LIST).split(";"));
+    } else {
+      brokers = getBrokerList(controllerURL, tenant);
+    }
     _session = new org.apache.pinot.client.Connection(properties, brokers, transport);
   }
 

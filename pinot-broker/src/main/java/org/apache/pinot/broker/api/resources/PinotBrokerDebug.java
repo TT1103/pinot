@@ -19,10 +19,14 @@
 package org.apache.pinot.broker.api.resources;
 
 import io.swagger.annotations.Api;
+import io.swagger.annotations.ApiKeyAuthDefinition;
 import io.swagger.annotations.ApiOperation;
 import io.swagger.annotations.ApiParam;
 import io.swagger.annotations.ApiResponse;
 import io.swagger.annotations.ApiResponses;
+import io.swagger.annotations.Authorization;
+import io.swagger.annotations.SecurityDefinition;
+import io.swagger.annotations.SwaggerDefinition;
 import java.util.List;
 import java.util.Map;
 import java.util.TreeMap;
@@ -33,24 +37,33 @@ import javax.ws.rs.PathParam;
 import javax.ws.rs.Produces;
 import javax.ws.rs.QueryParam;
 import javax.ws.rs.WebApplicationException;
+import javax.ws.rs.core.HttpHeaders;
 import javax.ws.rs.core.MediaType;
 import javax.ws.rs.core.Response;
 import org.apache.pinot.broker.routing.BrokerRoutingManager;
-import org.apache.pinot.broker.routing.timeboundary.TimeBoundaryInfo;
 import org.apache.pinot.core.routing.RoutingTable;
+import org.apache.pinot.core.routing.TimeBoundaryInfo;
 import org.apache.pinot.core.transport.ServerInstance;
+import org.apache.pinot.core.transport.server.routing.stats.ServerRoutingStatsManager;
 import org.apache.pinot.spi.config.table.TableType;
 import org.apache.pinot.spi.utils.builder.TableNameBuilder;
 import org.apache.pinot.sql.parsers.CalciteSqlCompiler;
 
+import static org.apache.pinot.spi.utils.CommonConstants.SWAGGER_AUTHORIZATION_KEY;
 
-@Api(tags = "Debug")
+
+@Api(tags = "Debug", authorizations = {@Authorization(value = SWAGGER_AUTHORIZATION_KEY)})
+@SwaggerDefinition(securityDefinition = @SecurityDefinition(apiKeyAuthDefinitions = @ApiKeyAuthDefinition(name =
+    HttpHeaders.AUTHORIZATION, in = ApiKeyAuthDefinition.ApiKeyLocation.HEADER, key = SWAGGER_AUTHORIZATION_KEY)))
 @Path("/")
 // TODO: Add APIs to return the RoutingTable (with unavailable segments)
 public class PinotBrokerDebug {
 
   @Inject
   private BrokerRoutingManager _routingManager;
+
+  @Inject
+  private ServerRoutingStatsManager _serverRoutingStatsManager;
 
   @GET
   @Produces(MediaType.APPLICATION_JSON)
@@ -126,5 +139,22 @@ public class PinotBrokerDebug {
     } else {
       throw new WebApplicationException("Cannot find routing for query: " + query, Response.Status.NOT_FOUND);
     }
+  }
+
+  /**
+   * API to get a snapshot of ServerRoutingStatsEntry for all the servers.
+   * @return String containing server name and the associated routing stats.
+   */
+  @GET
+  @Produces(MediaType.APPLICATION_JSON)
+  @Path("/debug/serverRoutingStats")
+  @ApiOperation(value = "Get the routing stats for all the servers")
+  @ApiResponses(value = {
+      @ApiResponse(code = 200, message = "Server routing Stats"),
+      @ApiResponse(code = 404, message = "Server routing Stats not found"),
+      @ApiResponse(code = 500, message = "Internal server error")
+  })
+  public String getServerRoutingStats() {
+    return _serverRoutingStatsManager.getServerRoutingStatsStr();
   }
 }

@@ -38,7 +38,6 @@ import org.apache.helix.HelixManager;
 import org.apache.helix.HelixManagerFactory;
 import org.apache.helix.InstanceType;
 import org.apache.helix.SystemPropertyKeys;
-import org.apache.helix.ZNRecord;
 import org.apache.helix.manager.zk.ZKHelixAdmin;
 import org.apache.helix.model.ExternalView;
 import org.apache.helix.model.HelixConfigScope;
@@ -48,6 +47,7 @@ import org.apache.helix.model.InstanceConfig;
 import org.apache.helix.model.Message;
 import org.apache.helix.model.builder.HelixConfigScopeBuilder;
 import org.apache.helix.participant.statemachine.StateModelFactory;
+import org.apache.helix.zookeeper.datamodel.ZNRecord;
 import org.apache.pinot.common.Utils;
 import org.apache.pinot.common.config.TlsConfig;
 import org.apache.pinot.common.metadata.ZKMetadataProvider;
@@ -61,7 +61,7 @@ import org.apache.pinot.common.utils.TlsUtils;
 import org.apache.pinot.common.utils.config.TagNameUtils;
 import org.apache.pinot.common.utils.fetcher.SegmentFetcherFactory;
 import org.apache.pinot.common.utils.helix.HelixHelper;
-import org.apache.pinot.core.common.datatable.DataTableBuilder;
+import org.apache.pinot.core.common.datatable.DataTableFactory;
 import org.apache.pinot.core.data.manager.InstanceDataManager;
 import org.apache.pinot.core.data.manager.realtime.RealtimeConsumptionRateManager;
 import org.apache.pinot.core.query.request.context.ThreadTimer;
@@ -180,8 +180,14 @@ public abstract class BaseServerStarter implements ServiceStartable {
             Server.DEFAULT_ENABLE_THREAD_CPU_TIME_MEASUREMENT));
 
     // Set data table version send to broker.
-    DataTableBuilder.setCurrentDataTableVersion(_serverConf.getProperty(Server.CONFIG_OF_CURRENT_DATA_TABLE_VERSION,
-        Server.DEFAULT_CURRENT_DATA_TABLE_VERSION));
+    int dataTableVersion =
+        _serverConf.getProperty(Server.CONFIG_OF_CURRENT_DATA_TABLE_VERSION, Server.DEFAULT_CURRENT_DATA_TABLE_VERSION);
+    if (dataTableVersion > Server.DEFAULT_CURRENT_DATA_TABLE_VERSION) {
+      LOGGER.warn("Setting experimental DataTable version newer than default via config could result in"
+          + " backward-compatibility issues. Current default DataTable version: "
+          + Server.DEFAULT_CURRENT_DATA_TABLE_VERSION);
+    }
+    DataTableFactory.setDataTableVersion(dataTableVersion);
 
     LOGGER.info("Initializing Helix manager with zkAddress: {}, clusterName: {}, instanceId: {}", _zkAddress,
         _helixClusterName, _instanceId);
@@ -230,12 +236,22 @@ public abstract class BaseServerStarter implements ServiceStartable {
     boolean isOffsetBasedConsumptionStatusCheckerEnabled =
         _serverConf.getProperty(Server.CONFIG_OF_ENABLE_REALTIME_OFFSET_BASED_CONSUMPTION_STATUS_CHECKER,
             Server.DEFAULT_ENABLE_REALTIME_OFFSET_BASED_CONSUMPTION_STATUS_CHECKER);
+    boolean isFreshnessStatusCheckerEnabled =
+        _serverConf.getProperty(Server.CONFIG_OF_ENABLE_REALTIME_FRESHNESS_BASED_CONSUMPTION_STATUS_CHECKER,
+            Server.DEFAULT_ENABLE_REALTIME_FRESHNESS_BASED_CONSUMPTION_STATUS_CHECKER);
+    int realtimeMinFreshnessMs = _serverConf.getProperty(Server.CONFIG_OF_STARTUP_REALTIME_MIN_FRESHNESS_MS,
+        Server.DEFAULT_STARTUP_REALTIME_MIN_FRESHNESS_MS);
 
     // collect all resources which have this instance in the ideal state
     List<String> resourcesToMonitor = new ArrayList<>();
 
     Set<String> consumingSegments = new HashSet<>();
     boolean checkRealtime = realtimeConsumptionCatchupWaitMs > 0;
+    if (isFreshnessStatusCheckerEnabled && realtimeMinFreshnessMs <= 0) {
+      LOGGER.warn("Realtime min freshness {} must be > 0. Setting relatime min freshness to default {}.",
+          realtimeMinFreshnessMs, Server.DEFAULT_STARTUP_REALTIME_MIN_FRESHNESS_MS);
+      realtimeMinFreshnessMs = Server.DEFAULT_STARTUP_REALTIME_MIN_FRESHNESS_MS;
+    }
 
     for (String resourceName : _helixAdmin.getResourcesInCluster(_helixClusterName)) {
       // Only monitor table resources
@@ -274,16 +290,34 @@ public abstract class BaseServerStarter implements ServiceStartable {
             _instanceId, resourcesToMonitor, minResourcePercentForStartup));
     boolean foundConsuming = !consumingSegments.isEmpty();
     if (checkRealtime && foundConsuming) {
-      Supplier<Integer> getNumConsumingSegmentsNotReachedTheirLatestOffset = null;
-      if (isOffsetBasedConsumptionStatusCheckerEnabled) {
+      // We specifically put the freshness based checker first to ensure it's the only one setup if both checkers
+      // are accidentally enabled together. The freshness based checker is a stricter version of the offset based
+      // checker. But in the end, both checkers are bounded in time by realtimeConsumptionCatchupWaitMs.
+      if (isFreshnessStatusCheckerEnabled) {
+        LOGGER.info("Setting up freshness based status checker");
+        FreshnessBasedConsumptionStatusChecker freshnessStatusChecker =
+            new FreshnessBasedConsumptionStatusChecker(_serverInstance.getInstanceDataManager(), consumingSegments,
+                realtimeMinFreshnessMs);
+        Supplier<Integer> getNumConsumingSegmentsNotReachedMinFreshness =
+            freshnessStatusChecker::getNumConsumingSegmentsNotReachedIngestionCriteria;
+        serviceStatusCallbackListBuilder.add(
+            new ServiceStatus.RealtimeConsumptionCatchupServiceStatusCallback(_helixManager, _helixClusterName,
+                _instanceId, realtimeConsumptionCatchupWaitMs, getNumConsumingSegmentsNotReachedMinFreshness));
+      } else if (isOffsetBasedConsumptionStatusCheckerEnabled) {
+        LOGGER.info("Setting up offset based status checker");
         OffsetBasedConsumptionStatusChecker consumptionStatusChecker =
             new OffsetBasedConsumptionStatusChecker(_serverInstance.getInstanceDataManager(), consumingSegments);
-        getNumConsumingSegmentsNotReachedTheirLatestOffset =
-            consumptionStatusChecker::getNumConsumingSegmentsNotReachedTheirLatestOffset;
+        Supplier<Integer> getNumConsumingSegmentsNotReachedTheirLatestOffset =
+            consumptionStatusChecker::getNumConsumingSegmentsNotReachedIngestionCriteria;
+        serviceStatusCallbackListBuilder.add(
+            new ServiceStatus.RealtimeConsumptionCatchupServiceStatusCallback(_helixManager, _helixClusterName,
+                _instanceId, realtimeConsumptionCatchupWaitMs, getNumConsumingSegmentsNotReachedTheirLatestOffset));
+      } else {
+        LOGGER.info("Setting up static time based status checker");
+        serviceStatusCallbackListBuilder.add(
+            new ServiceStatus.RealtimeConsumptionCatchupServiceStatusCallback(_helixManager, _helixClusterName,
+                _instanceId, realtimeConsumptionCatchupWaitMs, null));
       }
-      serviceStatusCallbackListBuilder.add(
-          new ServiceStatus.RealtimeConsumptionCatchupServiceStatusCallback(_helixManager, _helixClusterName,
-              _instanceId, realtimeConsumptionCatchupWaitMs, getNumConsumingSegmentsNotReachedTheirLatestOffset));
     }
     LOGGER.info("Registering service status handler");
     ServiceStatus.setServiceStatusCallback(_instanceId,
@@ -304,6 +338,9 @@ public abstract class BaseServerStarter implements ServiceStartable {
         return Collections.singletonList(Helix.UNTAGGED_SERVER_INSTANCE);
       }
     });
+
+    // Remove disabled partitions
+    updated |= HelixHelper.removeDisabledPartitions(instanceConfig);
 
     // Update admin HTTP/HTTPS port
     int adminHttpPort = Integer.MIN_VALUE;
@@ -329,7 +366,15 @@ public abstract class BaseServerStarter implements ServiceStartable {
     int grpcPort = serverConf.isEnableGrpcServer() ? serverConf.getGrpcPort() : Integer.MIN_VALUE;
     updated |= updatePortIfNeeded(simpleFields, Instance.GRPC_PORT_KEY, grpcPort);
 
-    // Update instance config with environment properties
+    // Update multi-stage query engine ports
+    if (serverConf.isMultiStageServerEnabled()) {
+      updated |= updatePortIfNeeded(simpleFields, Instance.MULTI_STAGE_QUERY_ENGINE_SERVICE_PORT_KEY,
+          serverConf.getMultiStageServicePort());
+      updated |= updatePortIfNeeded(simpleFields, Instance.MULTI_STAGE_QUERY_ENGINE_MAILBOX_PORT_KEY,
+          serverConf.getMultiStageMailboxPort());
+    }
+
+    // Update environment properties
     if (_pinotEnvironmentProvider != null) {
       // Retrieve failure domain information and add to the environment properties map
       String failureDomain = _pinotEnvironmentProvider.getFailureDomain();
@@ -340,6 +385,25 @@ public abstract class BaseServerStarter implements ServiceStartable {
         znRecord.setMapField(CommonConstants.ENVIRONMENT_IDENTIFIER, environmentProperties);
         updated = true;
       }
+    }
+
+    // Update system resource info (CPU, memory, etc)
+    Map<String, String> newSystemResourceInfoMap = new SystemResourceInfo().toMap();
+    Map<String, String> existingSystemResourceInfoMap =
+        znRecord.getMapField(CommonConstants.Helix.Instance.SYSTEM_RESOURCE_INFO_KEY);
+    if (!newSystemResourceInfoMap.equals(existingSystemResourceInfoMap)) {
+      LOGGER.info("Updating instance: {} with new system resource info: {}", _instanceId, newSystemResourceInfoMap);
+      if (existingSystemResourceInfoMap == null) {
+        existingSystemResourceInfoMap = newSystemResourceInfoMap;
+      } else {
+        // existingSystemResourceInfoMap may contains more KV pairs than newSystemResourceInfoMap,
+        // we need to preserve those KV pairs and only update the different values.
+        for (Map.Entry<String, String> entry : newSystemResourceInfoMap.entrySet()) {
+          existingSystemResourceInfoMap.put(entry.getKey(), entry.getValue());
+        }
+      }
+      znRecord.setMapField(Instance.SYSTEM_RESOURCE_INFO_KEY, existingSystemResourceInfoMap);
+      updated = true;
     }
 
     // If 'shutdownInProgress' is not set (new instance, or not shut down properly), set it to prevent brokers routing
@@ -468,9 +532,9 @@ public abstract class BaseServerStarter implements ServiceStartable {
         new SegmentOnlineOfflineStateModelFactory(_instanceId, instanceDataManager);
     _helixManager.getStateMachineEngine()
         .registerStateModelFactory(SegmentOnlineOfflineStateModelFactory.getStateModelName(), stateModelFactory);
-    // Start the server instance as a pre-connect callback so that it starts after connecting to the ZK in order to
-    // access the property store, but before receiving state transitions
-    _helixManager.addPreConnectCallback(_serverInstance::start);
+    // Start the data manager as a pre-connect callback so that it starts after connecting to the ZK in order to access
+    // the property store, but before receiving state transitions
+    _helixManager.addPreConnectCallback(_serverInstance::startDataManager);
 
     LOGGER.info("Connecting Helix manager");
     _helixManager.connect();
@@ -505,14 +569,16 @@ public abstract class BaseServerStarter implements ServiceStartable {
           startTimeMs + _serverConf.getProperty(Server.CONFIG_OF_STARTUP_TIMEOUT_MS, Server.DEFAULT_STARTUP_TIMEOUT_MS);
       startupServiceStatusCheck(endTimeMs);
     }
+
+    // Start the query server after finishing the service status check. If the query server is started before all the
+    // segments are loaded, broker might not have finished processing the callback of routing table update, and start
+    // querying the server pre-maturely.
+    _serverInstance.startQueryServer();
     _helixAdmin.setConfig(_instanceConfigScope,
         Collections.singletonMap(Helix.IS_SHUTDOWN_IN_PROGRESS, Boolean.toString(false)));
 
     // Throttling for realtime consumption is disabled up to this point to allow maximum consumption during startup time
     RealtimeConsumptionRateManager.getInstance().enableThrottling();
-
-    // Set the system resource info (CPU, Memory, etc) in the InstanceConfig.
-    setInstanceResourceInfo(_helixAdmin, _helixClusterName, _instanceId, new SystemResourceInfo().toMap());
 
     LOGGER.info("Pinot server ready");
 
@@ -739,21 +805,6 @@ public abstract class BaseServerStarter implements ServiceStartable {
   @VisibleForTesting
   public ServerInstance getServerInstance() {
     return _serverInstance;
-  }
-
-  /**
-   * Helper method to set system resource info into instance config.
-   *
-   * @param helixAdmin Helix Admin
-   * @param helixClusterName Name of Helix cluster
-   * @param instanceId Id of instance for which to set the system resource info
-   * @param systemResourceMap Map containing system resource info
-   */
-  protected void setInstanceResourceInfo(HelixAdmin helixAdmin, String helixClusterName, String instanceId,
-      Map<String, String> systemResourceMap) {
-    InstanceConfig instanceConfig = helixAdmin.getInstanceConfig(helixClusterName, instanceId);
-    instanceConfig.getRecord().setMapField(Helix.Instance.SYSTEM_RESOURCE_INFO_KEY, systemResourceMap);
-    helixAdmin.setInstanceConfig(helixClusterName, instanceId, instanceConfig);
   }
 
   /**

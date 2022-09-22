@@ -22,8 +22,12 @@ import com.fasterxml.jackson.databind.node.ArrayNode;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import com.google.common.base.Preconditions;
 import io.swagger.annotations.Api;
+import io.swagger.annotations.ApiKeyAuthDefinition;
 import io.swagger.annotations.ApiOperation;
 import io.swagger.annotations.ApiParam;
+import io.swagger.annotations.Authorization;
+import io.swagger.annotations.SecurityDefinition;
+import io.swagger.annotations.SwaggerDefinition;
 import java.io.IOException;
 import java.util.Collections;
 import java.util.List;
@@ -52,6 +56,7 @@ import org.apache.pinot.controller.api.access.AccessControlFactory;
 import org.apache.pinot.controller.api.access.AccessControlUtils;
 import org.apache.pinot.controller.api.access.AccessType;
 import org.apache.pinot.controller.api.access.Authenticate;
+import org.apache.pinot.controller.api.access.ManualAuthorization;
 import org.apache.pinot.controller.api.exception.ControllerApplicationException;
 import org.apache.pinot.controller.api.exception.InvalidTableConfigException;
 import org.apache.pinot.controller.api.exception.TableAlreadyExistsException;
@@ -62,18 +67,23 @@ import org.apache.pinot.segment.local.utils.TableConfigUtils;
 import org.apache.pinot.spi.config.TableConfigs;
 import org.apache.pinot.spi.config.table.TableConfig;
 import org.apache.pinot.spi.data.Schema;
+import org.apache.pinot.spi.utils.CommonConstants;
 import org.apache.pinot.spi.utils.JsonUtils;
 import org.apache.pinot.spi.utils.builder.TableNameBuilder;
 import org.glassfish.grizzly.http.server.Request;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import static org.apache.pinot.spi.utils.CommonConstants.SWAGGER_AUTHORIZATION_KEY;
+
 
 /**
  * Endpoints for CRUD of {@link TableConfigs}.
  * {@link TableConfigs} is a group of the offline table config, realtime table config and schema for the same tableName.
  */
-@Api(tags = Constants.TABLE_TAG)
+@Api(tags = Constants.TABLE_TAG, authorizations = {@Authorization(value = SWAGGER_AUTHORIZATION_KEY)})
+@SwaggerDefinition(securityDefinition = @SecurityDefinition(apiKeyAuthDefinitions = @ApiKeyAuthDefinition(name =
+    HttpHeaders.AUTHORIZATION, in = ApiKeyAuthDefinition.ApiKeyLocation.HEADER, key = SWAGGER_AUTHORIZATION_KEY)))
 @Path("/")
 public class TableConfigsRestletResource {
 
@@ -90,7 +100,6 @@ public class TableConfigsRestletResource {
 
   @Inject
   AccessControlFactory _accessControlFactory;
-  AccessControlUtils _accessControlUtils = new AccessControlUtils();
 
   /**
    * List all {@link TableConfigs}, where each is a group of the offline table config, realtime table config and
@@ -152,6 +161,7 @@ public class TableConfigsRestletResource {
   @Path("/tableConfigs")
   @ApiOperation(value = "Add the TableConfigs using the tableConfigsStr json",
       notes = "Add the TableConfigs using the tableConfigsStr json")
+  @ManualAuthorization // performed after parsing table configs
   public ConfigSuccessResponse addConfig(
       String tableConfigsStr,
       @ApiParam(value = "comma separated list of validation type(s) to skip. supported types: (ALL|TASK|UPSERT)")
@@ -177,6 +187,7 @@ public class TableConfigsRestletResource {
           Response.Status.BAD_REQUEST);
     }
 
+    // validate permission
     TableConfig offlineTableConfig = tableConfigs.getOffline();
     TableConfig realtimeTableConfig = tableConfigs.getRealtime();
     Schema schema = tableConfigs.getSchema();
@@ -184,24 +195,24 @@ public class TableConfigsRestletResource {
     try {
       String endpointUrl = request.getRequestURL().toString();
       AccessControl accessControl = _accessControlFactory.create();
-      _accessControlUtils
+      AccessControlUtils
           .validatePermission(schema.getSchemaName(), AccessType.CREATE, httpHeaders, endpointUrl, accessControl);
 
       if (offlineTableConfig != null) {
         tuneConfig(offlineTableConfig, schema);
-        _accessControlUtils
+        AccessControlUtils
             .validatePermission(offlineTableConfig.getTableName(), AccessType.CREATE, httpHeaders, endpointUrl,
                 accessControl);
       }
       if (realtimeTableConfig != null) {
         tuneConfig(realtimeTableConfig, schema);
-        _accessControlUtils
+        AccessControlUtils
             .validatePermission(realtimeTableConfig.getTableName(), AccessType.CREATE, httpHeaders, endpointUrl,
                 accessControl);
       }
 
       try {
-        _pinotHelixResourceManager.addSchema(schema, false);
+        _pinotHelixResourceManager.addSchema(schema, false, false);
         LOGGER.info("Added schema: {}", schema.getSchemaName());
         if (offlineTableConfig != null) {
           _pinotHelixResourceManager.addTable(offlineTableConfig);
@@ -368,9 +379,11 @@ public class TableConfigsRestletResource {
   @Path("/tableConfigs/validate")
   @Produces(MediaType.APPLICATION_JSON)
   @ApiOperation(value = "Validate the TableConfigs", notes = "Validate the TableConfigs")
+  @ManualAuthorization // performed after parsing TableConfigs
   public String validateConfig(String tableConfigsStr,
       @ApiParam(value = "comma separated list of validation type(s) to skip. supported types: (ALL|TASK|UPSERT)")
-      @QueryParam("validationTypesToSkip") @Nullable String typesToSkip) {
+      @QueryParam("validationTypesToSkip") @Nullable String typesToSkip, @Context HttpHeaders httpHeaders,
+      @Context Request request) {
     Pair<TableConfigs, Map<String, Object>> tableConfigsAndUnrecognizedProps;
     TableConfigs tableConfigs;
     try {
@@ -381,6 +394,30 @@ public class TableConfigsRestletResource {
       throw new ControllerApplicationException(LOGGER,
           String.format("Invalid TableConfigs json string: %s", tableConfigsStr), Response.Status.BAD_REQUEST, e);
     }
+
+    // validate permission
+    String endpointUrl = request.getRequestURL().toString();
+    AccessControl accessControl = _accessControlFactory.create();
+    Schema schema = tableConfigs.getSchema();
+    TableConfig offlineTableConfig = tableConfigs.getOffline();
+    TableConfig realtimeTableConfig = tableConfigs.getRealtime();
+
+    AccessControlUtils
+        .validatePermission(schema.getSchemaName(), AccessType.READ, httpHeaders, endpointUrl, accessControl);
+
+    if (offlineTableConfig != null) {
+      tuneConfig(offlineTableConfig, schema);
+      AccessControlUtils
+          .validatePermission(offlineTableConfig.getTableName(), AccessType.READ, httpHeaders, endpointUrl,
+              accessControl);
+    }
+    if (realtimeTableConfig != null) {
+      tuneConfig(realtimeTableConfig, schema);
+      AccessControlUtils
+          .validatePermission(realtimeTableConfig.getTableName(), AccessType.READ, httpHeaders, endpointUrl,
+              accessControl);
+    }
+
     TableConfigs validatedTableConfigs = validateConfig(tableConfigs, typesToSkip);
     ObjectNode response = JsonUtils.objectToJsonNode(validatedTableConfigs).deepCopy();
     response.set("unrecognizedProperties", JsonUtils.objectToJsonNode(tableConfigsAndUnrecognizedProps.getRight()));
@@ -408,19 +445,21 @@ public class TableConfigsRestletResource {
       Preconditions.checkState(rawTableName.equals(schema.getSchemaName()),
           "'tableName': %s must be equal to 'schemaName' from 'schema': %s", rawTableName, schema.getSchemaName());
       SchemaUtils.validate(schema);
-
+      boolean allowTableNameWithDatabase = _controllerConf.getProperty(
+          CommonConstants.Helix.ALLOW_TABLE_NAME_WITH_DATABASE,
+          CommonConstants.Helix.DEFAULT_ALLOW_TABLE_NAME_WITH_DATABASE);
       if (offlineTableConfig != null) {
         String offlineRawTableName = TableNameBuilder.extractRawTableName(offlineTableConfig.getTableName());
         Preconditions.checkState(offlineRawTableName.equals(rawTableName),
             "Name in 'offline' table config: %s must be equal to 'tableName': %s", offlineRawTableName, rawTableName);
-        TableConfigUtils.validateTableName(offlineTableConfig);
+        TableConfigUtils.validateTableName(offlineTableConfig, allowTableNameWithDatabase);
         TableConfigUtils.validate(offlineTableConfig, schema, typesToSkip, _controllerConf.isDisableIngestionGroovy());
       }
       if (realtimeTableConfig != null) {
         String realtimeRawTableName = TableNameBuilder.extractRawTableName(realtimeTableConfig.getTableName());
         Preconditions.checkState(realtimeRawTableName.equals(rawTableName),
             "Name in 'realtime' table config: %s must be equal to 'tableName': %s", realtimeRawTableName, rawTableName);
-        TableConfigUtils.validateTableName(realtimeTableConfig);
+        TableConfigUtils.validateTableName(realtimeTableConfig, allowTableNameWithDatabase);
         TableConfigUtils.validate(realtimeTableConfig, schema, typesToSkip, _controllerConf.isDisableIngestionGroovy());
       }
       if (offlineTableConfig != null && realtimeTableConfig != null) {

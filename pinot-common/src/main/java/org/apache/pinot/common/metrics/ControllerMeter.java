@@ -46,10 +46,16 @@ public enum ControllerMeter implements AbstractMetrics.Meter {
   LLC_STREAM_DATA_LOSS("dataLoss", false),
   CONTROLLER_PERIODIC_TASK_RUN("periodicTaskRun", false),
   CONTROLLER_PERIODIC_TASK_ERROR("periodicTaskError", false),
+  PERIODIC_TASK_ERROR("periodicTaskError", false),
   NUMBER_TIMES_SCHEDULE_TASKS_CALLED("tasks", true),
   NUMBER_TASKS_SUBMITTED("tasks", false),
   NUMBER_SEGMENT_UPLOAD_TIMEOUT_EXCEEDED("SegmentUploadTimeouts", true),
+  // Segment replace api failure metrics
+  NUMBER_START_REPLACE_FAILURE("NumStartReplaceFailure", false),
+  NUMBER_END_REPLACE_FAILURE("NumEndReplaceFailure", false),
+  NUMBER_REVERT_REPLACE_FAILURE("NumRevertReplaceFailure", false),
   CRON_SCHEDULER_JOB_TRIGGERED("cronSchedulerJobTriggered", false),
+  CRON_SCHEDULER_JOB_SKIPPED("cronSchedulerJobSkipped", false),
   LLC_SEGMENTS_DEEP_STORE_UPLOAD_RETRY_ERROR("LLCSegmentDeepStoreUploadRetryError", false),
   NUMBER_ADHOC_TASKS_SUBMITTED("adhocTasks", false);
 

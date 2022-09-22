@@ -40,6 +40,7 @@ import org.apache.pinot.core.data.manager.realtime.SegmentUploader;
 import org.apache.pinot.core.transport.ListenerConfig;
 import org.apache.pinot.segment.local.data.manager.TableDataManager;
 import org.apache.pinot.segment.local.data.manager.TableDataManagerConfig;
+import org.apache.pinot.segment.local.data.manager.TableDataManagerParams;
 import org.apache.pinot.segment.local.indexsegment.immutable.ImmutableSegmentLoader;
 import org.apache.pinot.segment.local.segment.creator.SegmentTestUtils;
 import org.apache.pinot.segment.local.segment.creator.impl.SegmentIndexCreationDriverImpl;
@@ -86,6 +87,7 @@ public abstract class BaseResourceTest {
   private File _avroFile;
   private AdminApiApplication _adminApiApplication;
   protected WebTarget _webTarget;
+  protected String _instanceId;
 
   @SuppressWarnings("SuspiciousMethodCalls")
   @BeforeClass
@@ -105,6 +107,7 @@ public abstract class BaseResourceTest {
 
     // Mock the server instance
     ServerInstance serverInstance = mock(ServerInstance.class);
+    when(serverInstance.getServerMetrics()).thenReturn(mock(ServerMetrics.class));
     when(serverInstance.getInstanceDataManager()).thenReturn(instanceDataManager);
     when(serverInstance.getInstanceDataManager().getSegmentFileDirectory())
         .thenReturn(FileUtils.getTempDirectoryPath());
@@ -132,8 +135,8 @@ public abstract class BaseResourceTest {
             ? NetUtils.getHostnameOrAddress() : NetUtils.getHostAddress());
     int port = serverConf.getProperty(CommonConstants.Helix.KEY_OF_SERVER_NETTY_PORT,
         CommonConstants.Helix.DEFAULT_SERVER_NETTY_PORT);
-    serverConf.setProperty(CommonConstants.Server.CONFIG_OF_INSTANCE_ID,
-        CommonConstants.Helix.PREFIX_OF_SERVER_INSTANCE + hostname + "_" + port);
+    _instanceId = CommonConstants.Helix.PREFIX_OF_SERVER_INSTANCE + hostname + "_" + port;
+    serverConf.setProperty(CommonConstants.Server.CONFIG_OF_INSTANCE_ID, _instanceId);
     _adminApiApplication = new AdminApiApplication(serverInstance, new AllowAllAccessFactory(), serverConf);
     _adminApiApplication.start(Collections.singletonList(
         new ListenerConfig(CommonConstants.HTTP_PROTOCOL, "0.0.0.0", CommonConstants.Server.DEFAULT_ADMIN_API_PORT,
@@ -193,7 +196,7 @@ public abstract class BaseResourceTest {
     TableDataManager tableDataManager = new OfflineTableDataManager();
     tableDataManager
         .init(tableDataManagerConfig, "testInstance", mock(ZkHelixPropertyStore.class), mock(ServerMetrics.class),
-            mock(HelixManager.class), null, 0);
+            mock(HelixManager.class), null, new TableDataManagerParams(0, false, -1));
     tableDataManager.start();
     _tableDataManagerMap.put(tableNameWithType, tableDataManager);
   }

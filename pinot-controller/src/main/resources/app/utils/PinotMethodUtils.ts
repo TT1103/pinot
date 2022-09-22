@@ -17,7 +17,7 @@
  * under the License.
  */
 
-import _ from 'lodash';
+import { get, map, each, isEqual, isArray, keys, union } from 'lodash';
 import { DataTable, SQLResult } from 'Models';
 import moment from 'moment';
 import {
@@ -28,6 +28,23 @@ import {
   setInstanceState,
   setTableState,
   dropInstance,
+  getPeriodicTaskNames,
+  getTaskTypes,
+  getTaskTypeDebug,
+  getTables,
+  getTaskTypeTasks,
+  getTaskTypeState,
+  stopTasks,
+  resumeTasks,
+  cleanupTasks,
+  deleteTasks,
+  sheduleTask,
+  executeTask,
+  getJobDetail,
+  getMinionMeta,
+  getTasks,
+  getTaskDebug,
+  getTaskGeneratorDebug,
   updateInstanceTags,
   getClusterConfig,
   getQueryTables,
@@ -83,7 +100,7 @@ const JSONbig = require('json-bigint')({'storeAsString': true})
 // Expected Output: {columns: [], records: []}
 const getTenantsData = () => {
   return getTenants().then(({ data }) => {
-    const records = _.union(data.SERVER_TENANTS, data.BROKER_TENANTS);
+    const records = union(data.SERVER_TENANTS, data.BROKER_TENANTS);
     const serverPromiseArr = [], brokerPromiseArr = [], tablePromiseArr = [];
     const finalResponse = {
       columns: ['Tenant Name', 'Server', 'Broker', 'Tables'],
@@ -136,7 +153,7 @@ const getAllInstances = () => {
 };
 
 // This method is used to display instance data on cluster manager home page
-// API: /instances/:instaneName
+// API: /instances/:instanceName
 // Expected Output: {columns: [], records: []}
 const getInstanceData = (instances, liveInstanceArr) => {
   const promiseArr = [...instances.map((inst) => getInstance(inst))];
@@ -239,7 +256,7 @@ const getAsObject = (str: SQLResult) => {
 // This method is used to display query output in tabular format as well as JSON format on query page
 // API: /:urlName (Eg: sql or pql)
 // Expected Output: {columns: [], records: []}
-const getQueryResults = (params, checkedOptions) => {
+const getQueryResults = (params) => {
   return getQueryResult(params).then(({ data }) => {
     let queryResponse = getAsObject(data);
 
@@ -253,46 +270,7 @@ const getQueryResults = (params, checkedOptions) => {
       errorStr = JSON.stringify(queryResponse.exceptions, null, 2);
     } else
     {
-      if (checkedOptions.querySyntaxPQL === true)
-      {
-        if (queryResponse)
-        {
-          if (queryResponse.selectionResults)
-          {
-            // Selection query
-            columnList = queryResponse.selectionResults.columns;
-            dataArray = queryResponse.selectionResults.results;
-          }
-          else if (!queryResponse.aggregationResults[0]?.groupByResult)
-          {
-            // Simple aggregation query
-            columnList = _.map(queryResponse.aggregationResults, (aggregationResult) => {
-              return {title: aggregationResult.function};
-            });
-
-            dataArray.push(_.map(queryResponse.aggregationResults, (aggregationResult) => {
-              return aggregationResult.value;
-            }));
-          }
-          else if (queryResponse.aggregationResults[0]?.groupByResult)
-          {
-            // Aggregation group by query
-            // TODO - Revisit
-            const columns = queryResponse.aggregationResults[0].groupByColumns;
-            columns.push(queryResponse.aggregationResults[0].function);
-            columnList = _.map(columns, (columnName) => {
-              return columnName;
-            });
-
-            dataArray = _.map(queryResponse.aggregationResults[0].groupByResult, (aggregationGroup) => {
-              const row = aggregationGroup.group;
-              row.push(aggregationGroup.value);
-              return row;
-            });
-          }
-        }
-      }
-      else if (queryResponse.resultTable?.dataSchema?.columnNames?.length)
+      if (queryResponse.resultTable?.dataSchema?.columnNames?.length)
       {
         columnList = queryResponse.resultTable.dataSchema.columnNames;
         dataArray = queryResponse.resultTable.rows;
@@ -502,7 +480,7 @@ const getSegmentList = (tableName) => {
 };
 
 const getSegmentStatus = (idealSegment, externalViewSegment) => {
-  if(_.isEqual(idealSegment, externalViewSegment)){
+  if(isEqual(idealSegment, externalViewSegment)){
     return 'Good';
   }
   let goodCount = 0;
@@ -535,16 +513,16 @@ const getTableDetails = (tableName) => {
   });
 };
 
-// This method is used to display summary of a particular segment, replia set as well as JSON format of a tenant table
+// This method is used to display summary of a particular segment, replica set as well as JSON format of a tenant table
 // API: /tables/tableName/externalview
 //      /segments/:tableName/:segmentName/metadata
 // Expected Output: {columns: [], records: []}
 const getSegmentDetails = (tableName, segmentName) => {
-  const tableInfo = tableName.split('_');
+  let [baseTableName, tableType] = Utils.splitStringByLastUnderscore(tableName)
   const promiseArr = [];
   promiseArr.push(getExternalView(tableName));
   promiseArr.push(getSegmentMetadata(tableName, segmentName));
-  promiseArr.push(getSegmentDebugInfo(tableInfo[0], tableInfo[1].toLowerCase()));
+  promiseArr.push(getSegmentDebugInfo(baseTableName, tableType.toLowerCase()));
 
   return Promise.all(promiseArr).then((results) => {
     const obj = results[0].data.OFFLINE || results[0].data.REALTIME;
@@ -555,7 +533,7 @@ const getSegmentDetails = (tableName, segmentName) => {
     if(debugObj && debugObj[0]){
       const debugInfosObj = debugObj[0].segmentDebugInfos?.find((o)=>{return o.segmentName === segmentName});
       if(debugInfosObj){
-        const serverNames = _.keys(debugInfosObj?.serverState || {});
+        const serverNames = keys(debugInfosObj?.serverState || {});
         serverNames?.map((serverName)=>{
           debugInfoObj[serverName] = debugInfosObj.serverState[serverName]?.errorInfo?.errorMessage;
         });
@@ -746,6 +724,117 @@ const deleteInstance = (instanceName) => {
   });
 };
 
+const getAllPeriodicTaskNames = () => {
+  return getPeriodicTaskNames().then((response)=>{
+    return { columns: ['Task Name'], records: response.data.map(d => [d]) };
+  });
+};
+
+const getAllTaskTypes = async () => {
+  const finalResponse = {
+    columns: ['Task Type', 'Num Tasks in Queue', 'Queue Status'],
+    records: []
+  }
+  await new Promise((resolve, reject) => {
+    getTaskTypes().then(async (response)=>{
+      if (isArray(response.data)) {
+        const promiseArr = [];
+        const fetchInfo = async (taskType) => {
+          const [ count, state ] = await getTaskInfo(taskType);
+          finalResponse.records.push([taskType, count, state]);
+        };
+        response.data.forEach((taskType) => promiseArr.push(fetchInfo(taskType)));
+        await Promise.all(promiseArr);
+        resolve(finalResponse);
+      }
+    });
+  })
+  return finalResponse;
+};
+
+const getTaskInfo = async (taskType) => {
+  const tasksRes = await getTaskTypeTasks(taskType);
+  const stateRes = await getTaskTypeState(taskType);
+  const state = get(stateRes, 'data', '');
+  return [tasksRes?.data?.length || 0, state];
+};
+
+const stopAllTasks = (taskType) => {
+  return stopTasks(taskType).then((response)=>{
+    return response.data;
+  });
+};
+
+const resumeAllTasks = (taskType) => {
+  return resumeTasks(taskType).then((response)=>{
+    return response.data;
+  });
+};
+
+const cleanupAllTasks = (taskType) => {
+  return cleanupTasks(taskType).then((response)=>{
+    return response.data;
+  });
+};
+
+const deleteAllTasks = (taskType) => {
+  return deleteTasks(taskType).then((response)=>{
+    return response.data;
+  });
+};
+
+const getMinionMetaData = (tableName, taskType) => {
+  return getMinionMeta(tableName, taskType).then((response)=>{
+    return response.data;
+  });
+};
+
+const getElapsedTime = (startTime) => {
+  const currentTime = moment();
+  const diff = currentTime.diff(startTime);
+  const elapsedTime = diff > (1000 * 60 * 60) ? `${currentTime.diff(startTime, 'hour')} hours` : `${currentTime.diff(startTime, 'minute')} minutes`;
+  return elapsedTime;
+}
+
+const getTasksList = async (tableName, taskType) => {
+  const finalResponse = {
+    columns: ['Task ID', 'Status', 'Start Time', 'Finish Time', 'Num of Sub Tasks'],
+    records: []
+  }
+  await new Promise((resolve, reject) => {
+    getTasks(tableName, taskType).then(async (response)=>{
+      const promiseArr = [];
+      const fetchInfo = async (taskID, status) => {
+        const debugData = await getTaskDebugData(taskID);
+        const startTime = moment(get(debugData, 'data.subtaskInfos.0.startTime'), 'YYYY-MM-DD hh:mm:ss');
+        finalResponse.records.push([
+          taskID,
+          status,
+          get(debugData, 'data.subtaskInfos.0.startTime'),
+          get(debugData, 'data.subtaskInfos.0.finishTime', ''),
+          get(debugData, 'data.subtaskCount.total', 0)
+        ]);
+      };
+      each(response.data, async (val, key) => {
+        promiseArr.push(fetchInfo(key, val));
+      });
+      await Promise.all(promiseArr);
+      resolve(finalResponse);
+    });
+  })
+  return finalResponse;
+};
+
+const getTaskDebugData = async (taskName) => {
+  const debugRes = await getTaskDebug(taskName);
+  return debugRes;
+};
+
+const getTaskGeneratorDebugData = async (taskName, taskType) => {
+  const debugRes = await getTaskGeneratorDebug(taskName, taskType);
+  return debugRes;
+};
+
 const reloadSegmentOp = (tableName, segmentName) => {
   return reloadSegment(tableName, segmentName).then((response)=>{
     return response.data;
@@ -916,6 +1005,36 @@ const getTable = ()=>{
   })
 };
 
+const getTaskTypeDebugData = (taskType)=>{
+  return getTaskTypeDebug(taskType).then(response=>{
+    return response.data;
+  })
+};
+
+const getTableData = (params)=>{
+  return getTables(params).then(response=>{
+    return response.data;
+  })
+};
+
+const scheduleTaskAction = (tableName, taskType)=>{
+  return sheduleTask(tableName, taskType).then(response=>{
+    return response.data;
+  })
+};
+
+const executeTaskAction = (data)=>{
+  return executeTask(data).then(response=>{
+    return response.data;
+  })
+};
+
+const getScheduleJobDetail = (tableName, taskType)=>{
+  return getJobDetail(tableName, taskType).then(response=>{
+    return response.data;
+  })
+};
+
 const getUserList = ()=>{
   return requestUserList().then(response=>{
     return response.data;
@@ -972,6 +1091,23 @@ export default {
   toggleInstanceState,
   toggleTableState,
   deleteInstance,
+  getAllPeriodicTaskNames,
+  getAllTaskTypes,
+  getTaskTypeDebugData,
+  getTableData,
+  getTaskInfo,
+  stopAllTasks,
+  resumeAllTasks,
+  cleanupAllTasks,
+  deleteAllTasks,
+  scheduleTaskAction,
+  executeTaskAction,
+  getScheduleJobDetail,
+  getMinionMetaData,
+  getElapsedTime,
+  getTasksList,
+  getTaskDebugData,
+  getTaskGeneratorDebugData,
   deleteSegmentOp,
   reloadSegmentOp,
   reloadStatusOp,

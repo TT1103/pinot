@@ -30,6 +30,7 @@ import java.util.Collections;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 import java.util.Properties;
 import java.util.stream.Collectors;
 import org.apache.commons.configuration.ConfigurationException;
@@ -247,7 +248,7 @@ public class TlsIntegrationTest extends BaseClusterIntegrationTest {
   }
 
   @Override
-  protected void addSchema(Schema schema)
+  public void addSchema(Schema schema)
       throws IOException {
     SimpleHttpResponse response =
         sendMultipartPostRequest(_controllerRequestURLBuilder.forSchemaCreate(), schema.toSingleLineJsonString(),
@@ -256,7 +257,7 @@ public class TlsIntegrationTest extends BaseClusterIntegrationTest {
   }
 
   @Override
-  protected void addTableConfig(TableConfig tableConfig)
+  public void addTableConfig(TableConfig tableConfig)
       throws IOException {
     sendPostRequest(_controllerRequestURLBuilder.forTableCreate(), tableConfig.toJsonString(), AUTH_HEADER);
   }
@@ -276,7 +277,7 @@ public class TlsIntegrationTest extends BaseClusterIntegrationTest {
   }
 
   @Override
-  protected void dropRealtimeTable(String tableName)
+  public void dropRealtimeTable(String tableName)
       throws IOException {
     sendDeleteRequest(
         _controllerRequestURLBuilder.forTableDelete(TableNameBuilder.REALTIME.tableNameWithType(tableName)),
@@ -525,6 +526,16 @@ public class TlsIntegrationTest extends BaseClusterIntegrationTest {
     } catch (Exception e) {
       // this should fail
     }
+  }
+
+  @Test
+  public void testComponentUrlWithTlsPort() {
+    List<InstanceConfig> instanceConfigs = HelixHelper.getInstanceConfigs(_helixManager);
+    List<String> httpsComponentUrls = instanceConfigs.stream().map(ExtraInstanceConfig::new)
+        .filter(pinotInstanceConfig -> pinotInstanceConfig.getTlsPort() != null)
+        .map(ExtraInstanceConfig::getComponentUrl).filter(Objects::nonNull).collect(Collectors.toList());
+
+    Assert.assertFalse(httpsComponentUrls.isEmpty());
   }
 
   private java.sql.Connection getValidJDBCConnection(int controllerPort) throws Exception {
